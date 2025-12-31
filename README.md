@@ -1,67 +1,67 @@
 # Zobo - ESP32 BLE Robot Controller
 
-Zobo is an ESP32-based robot controller with Bluetooth Low Energy (BLE) communication. The project includes firmware for ESP32 and a mobile app for Android.
+Zobo je robot ovládaný přes ESP32 s Bluetooth Low Energy (BLE) komunikací. Projekt obsahuje firmware pro ESP32 a mobilní aplikaci pro Android.
 
-## Project Structure
+## Struktura projektu
 
 ```
 Zobo/
-├── zobo_flutter/       # Flutter mobile app (Android/iOS)
+├── zobo_flutter/       # Flutter mobilní aplikace (Android/iOS)
 ├── zobo_platformio/    # PlatformIO Arduino firmware
-├── zobo_esp32/         # Native ESP-IDF firmware
-└── zobo_eagle/         # PCB design files
+├── zobo_esp32/         # Nativní ESP-IDF firmware
+└── zobo_eagle/         # Návrh PCB
 ```
 
-## Features
+## Funkce
 
-- **BLE UART Communication** - Nordic UART Service for wireless control
-- **Motor Control** - Dual motor PWM control with direction
-- **Smooth Acceleration** - Forward ramp from 100 to 255 PWM over 2 seconds
-- **Safety Timeout** - Auto-stop after 300ms of inactivity
-- **RGB LED Control** - Status indication via RGB LED
-- **Cross-Platform App** - Flutter app for Android (iOS ready)
+- **BLE UART komunikace** - Nordic UART Service pro bezdrátové ovládání
+- **Řízení motorů** - Duální PWM řízení motorů se směrem
+- **Plynulá akcelerace** - Rampa vpřed z PWM 100 na 255 během 2 sekund
+- **Bezpečnostní timeout** - Automatické zastavení po 300ms nečinnosti
+- **RGB LED ovládání** - Stavová indikace pomocí RGB LED
+- **Multiplatformní aplikace** - Flutter aplikace pro Android (připraveno i pro iOS)
 
 ## Hardware
 
-### Pin Configuration (ESP32)
+### Konfigurace pinů (ESP32)
 
-| Function | GPIO |
-|----------|------|
-| Motor Left PWM | 16 |
-| Motor Left DIR | 17 |
-| Motor Right PWM | 25 |
-| Motor Right DIR | 26 |
-| LED Red | 27 |
-| LED Green | 14 |
-| LED Blue | 12 |
-| LED Main | 5 |
+| Funkce | GPIO |
+|--------|------|
+| Motor levý PWM | 16 |
+| Motor levý směr | 17 |
+| Motor pravý PWM | 25 |
+| Motor pravý směr | 26 |
+| LED červená | 27 |
+| LED zelená | 14 |
+| LED modrá | 12 |
+| LED hlavní | 5 |
 
 ### BLE Service UUIDs (Nordic UART)
 
-| Characteristic | UUID |
-|----------------|------|
+| Charakteristika | UUID |
+|-----------------|------|
 | Service | `6E400001-B5A3-F393-E0A9-E50E24DCCA9E` |
-| RX (Write) | `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` |
-| TX (Notify) | `6E400003-B5A3-F393-E0A9-E50E24DCCA9E` |
+| RX (zápis) | `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` |
+| TX (notifikace) | `6E400003-B5A3-F393-E0A9-E50E24DCCA9E` |
 
-## Robot Commands
+## Příkazy robota
 
-| Command | Value | Description |
-|---------|-------|-------------|
-| Backward | `0x00` | Move backward at PWM 100 |
-| Forward | `0x01` | Move forward with ramp acceleration |
-| Stop | `0x02` | Stop all motors |
-| Right | `0x03` | Turn right |
-| Left | `0x04` | Turn left |
-| Manual | `0x05` | Manual PWM control (param: 0-100) |
-| LED Green | `0x0A` (10) | Set LED to green |
-| LED Red | `0x14` (20) | Set LED to red |
-| LED Blue | `0x1E` (30) | Set LED to blue |
-| LED All | `0x28` (40) | Turn on all LEDs |
+| Příkaz | Hodnota | Popis |
+|--------|---------|-------|
+| Vzad | `0x00` | Jízda vzad s PWM 100 |
+| Vpřed | `0x01` | Jízda vpřed s rampou akcelerace |
+| Stop | `0x02` | Zastavení motorů |
+| Vpravo | `0x03` | Otočení vpravo |
+| Vlevo | `0x04` | Otočení vlevo |
+| Manuál | `0x05` | Manuální PWM řízení (param: 0-100) |
+| LED zelená | `0x0A` (10) | Nastavení LED na zelenou |
+| LED červená | `0x14` (20) | Nastavení LED na červenou |
+| LED modrá | `0x1E` (30) | Nastavení LED na modrou |
+| LED vše | `0x28` (40) | Zapnutí všech LED |
 
-## Building
+## Sestavení
 
-### Flutter App (zobo_flutter)
+### Flutter aplikace (zobo_flutter)
 
 ```bash
 cd zobo_flutter
@@ -69,7 +69,7 @@ flutter pub get
 flutter build apk --release
 ```
 
-### PlatformIO Firmware (zobo_platformio)
+### PlatformIO firmware (zobo_platformio)
 
 ```bash
 cd zobo_platformio
@@ -77,7 +77,7 @@ pio run
 pio run -t upload -p COM9
 ```
 
-### ESP-IDF Firmware (zobo_esp32)
+### ESP-IDF firmware (zobo_esp32)
 
 ```bash
 cd zobo_esp32
@@ -85,9 +85,9 @@ idf.py build
 idf.py -p COM9 flash monitor
 ```
 
-## Requirements
+## Požadavky
 
-### Mobile App
+### Mobilní aplikace
 - Flutter SDK 3.0+
 - Android SDK 34
 - Dart 3.0+
@@ -99,19 +99,19 @@ idf.py -p COM9 flash monitor
 ### Firmware (ESP-IDF)
 - ESP-IDF v5.0+
 
-## App Screenshots
+## Funkce aplikace
 
-The Flutter app provides:
-- BLE device scanning and connection
-- D-Pad controls for robot movement
-- RGB LED control buttons
-- Connection status display
-- Command log viewer
+Flutter aplikace poskytuje:
+- Skenování a připojení BLE zařízení
+- D-Pad ovládání pro pohyb robota
+- Tlačítka pro ovládání RGB LED
+- Zobrazení stavu připojení
+- Prohlížeč logu příkazů
 
-## License
+## Licence
 
-This project is proprietary. All rights reserved.
+Tento projekt je proprietární. Všechna práva vyhrazena.
 
-## Author
+## Autor
 
 David Petrov
