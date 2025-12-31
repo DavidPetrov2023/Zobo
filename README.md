@@ -7,7 +7,6 @@ Zobo je robot ovládaný přes ESP32 s Bluetooth Low Energy (BLE) komunikací. P
 ```
 Zobo/
 ├── zobo_flutter/       # Flutter mobilní aplikace (Android/iOS)
-├── zobo_platformio/    # PlatformIO Arduino firmware
 ├── zobo_esp32/         # Nativní ESP-IDF firmware
 └── zobo_eagle/         # Návrh PCB
 ```
@@ -69,14 +68,6 @@ flutter pub get
 flutter build apk --release
 ```
 
-### PlatformIO firmware (zobo_platformio)
-
-```bash
-cd zobo_platformio
-pio run
-pio run -t upload -p COM9
-```
-
 ### ESP-IDF firmware (zobo_esp32)
 
 ```bash
@@ -91,10 +82,6 @@ idf.py -p COM9 flash monitor
 - Flutter SDK 3.0+
 - Android SDK 34
 - Dart 3.0+
-
-### Firmware (PlatformIO)
-- PlatformIO Core
-- ESP32 Arduino Framework
 
 ### Firmware (ESP-IDF)
 - ESP-IDF v5.0+

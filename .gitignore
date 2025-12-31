@@ -103,16 +103,6 @@ zobo_flutter/ios/Flutter/App.framework
 zobo_flutter/ios/Flutter/ephemeral/
 
 # ============================================================================
-# PlatformIO (zobo_platformio)
-# ============================================================================
-zobo_platformio/.pio/
-zobo_platformio/.pioenvs/
-zobo_platformio/.piolibdeps/
-zobo_platformio/.vscode/
-zobo_platformio/lib/
-zobo_platformio/include/
-
-# ============================================================================
 # ESP-IDF (zobo_esp32)
 # ============================================================================
 zobo_esp32/build/
