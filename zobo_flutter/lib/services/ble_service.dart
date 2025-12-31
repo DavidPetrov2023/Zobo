@@ -17,6 +17,19 @@ enum RobotCommand {
   const RobotCommand(this.value);
 }
 
+// Extended commands for WiFi and OTA
+class ExtendedCommands {
+  static const int wifiSet = 0x50;
+  static const int wifiConnect = 0x51;
+  static const int wifiDisconnect = 0x52;
+  static const int wifiStatus = 0x53;
+  static const int wifiClear = 0x54;
+  static const int otaUpdate = 0x60;
+  static const int otaCheck = 0x61;
+  static const int getVersion = 0x62;
+  static const int getInfo = 0x63;
+}
+
 class BleService {
   static const String deviceName = "Zobo";
 
@@ -35,11 +48,13 @@ class BleService {
   final _isConnected = StreamController<bool>.broadcast();
   final _deviceName = StreamController<String?>.broadcast();
   final _logMessages = StreamController<String>.broadcast();
+  final _responses = StreamController<String>.broadcast();
 
   Stream<bool> get isScanning => _isScanning.stream;
   Stream<bool> get isConnected => _isConnected.stream;
   Stream<String?> get deviceNameStream => _deviceName.stream;
   Stream<String> get logMessages => _logMessages.stream;
+  Stream<String> get responses => _responses.stream;
 
   bool _connected = false;
   bool _scanning = false;
@@ -119,6 +134,14 @@ class BleService {
     if (_deviceId == null) return;
 
     try {
+      // Request larger MTU for longer messages (WiFi credentials, OTA URLs)
+      try {
+        final mtu = await _ble.requestMtu(deviceId: _deviceId!, mtu: 512);
+        _addLog("MTU", "Negotiated MTU: $mtu");
+      } catch (e) {
+        _addLog("MTU", "MTU negotiation failed, using default");
+      }
+
       _rxCharacteristic = QualifiedCharacteristic(
         serviceId: uartServiceUuid,
         characteristicId: uartRxUuid,
@@ -134,6 +157,7 @@ class BleService {
       _notificationSubscription = _ble.subscribeToCharacteristic(txCharacteristic).listen((data) {
         final text = utf8.decode(data);
         _addLog("RX", text);
+        _responses.add(text);
       }, onError: (e) {
         _addLog("Error", "Notification error: $e");
       });
@@ -164,11 +188,16 @@ class BleService {
   }
 
   Future<void> sendByte(int value) async {
+    await sendBytes([value]);
+  }
+
+  Future<void> sendBytes(List<int> bytes) async {
     if (_rxCharacteristic == null || !_connected) return;
 
     try {
-      await _ble.writeCharacteristicWithResponse(_rxCharacteristic!, value: [value]);
-      _addLog("TX", "[byte] $value (0x${value.toRadixString(16)})");
+      await _ble.writeCharacteristicWithResponse(_rxCharacteristic!, value: bytes);
+      final hexStr = bytes.map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').join(' ');
+      _addLog("TX", "[bytes] $hexStr");
     } catch (e) {
       _addLog("Error", "Send failed: $e");
     }
@@ -200,5 +229,56 @@ class BleService {
     _isConnected.close();
     _deviceName.close();
     _logMessages.close();
+    _responses.close();
+  }
+
+  // ============================================================================
+  // WiFi Commands
+  // ============================================================================
+
+  Future<void> setWifiCredentials(String ssid, String password) async {
+    // Format: 0x50 + SSID + \0 + PASSWORD + \0
+    final bytes = [ExtendedCommands.wifiSet, ...utf8.encode(ssid), 0, ...utf8.encode(password), 0];
+    await sendBytes(bytes);
+  }
+
+  Future<void> connectWifi() async {
+    await sendBytes([ExtendedCommands.wifiConnect]);
+  }
+
+  Future<void> disconnectWifi() async {
+    await sendBytes([ExtendedCommands.wifiDisconnect]);
+  }
+
+  Future<void> getWifiStatus() async {
+    await sendBytes([ExtendedCommands.wifiStatus]);
+  }
+
+  Future<void> clearWifiCredentials() async {
+    await sendBytes([ExtendedCommands.wifiClear]);
+  }
+
+  // ============================================================================
+  // OTA Commands
+  // ============================================================================
+
+  Future<void> startOtaUpdate(String url) async {
+    // Format: 0x60 + URL + \0
+    final bytes = [ExtendedCommands.otaUpdate, ...utf8.encode(url), 0];
+    await sendBytes(bytes);
+  }
+
+  Future<void> checkOtaUpdate(String versionUrl) async {
+    // Format: 0x61 + URL + \0
+    final bytes = [ExtendedCommands.otaCheck, ...utf8.encode(versionUrl), 0];
+    await sendBytes(bytes);
+  }
+
+  Future<void> getVersion() async {
+    await sendBytes([ExtendedCommands.getVersion]);
+  }
+
+  Future<void> getDeviceInfo() async {
+    await sendBytes([ExtendedCommands.getInfo]);
   }
 }

@@ -1,11 +1,12 @@
 /**
- * Zobo ESP32 Robot Controller - Native ESP-IDF Implementation
+ * Zobo ESP32 Robot Controller - Main Application
  *
- * BLE UART Service for robot control with:
- * - Motor PWM control (left/right)
+ * Features:
+ * - BLE UART control
+ * - Motor PWM control
  * - RGB LED control
- * - Forward ramp acceleration
- * - Inactivity timeout
+ * - WiFi configuration via BLE
+ * - OTA firmware updates
  */
 
 #include <stdio.h>
@@ -13,399 +14,91 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/timers.h"
-#include "driver/gpio.h"
-#include "driver/ledc.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "esp_bt.h"
-#include "esp_gap_ble_api.h"
-#include "esp_gatts_api.h"
-#include "esp_bt_main.h"
-#include "esp_gatt_common_api.h"
+
+#include "motor.h"
+#include "led.h"
+#include "ble_service.h"
+#include "wifi_manager.h"
+#include "ota_manager.h"
 
 static const char *TAG = "ZOBO";
 
-// ============================================================================
-// GPIO Pin Definitions
-// ============================================================================
+// BLE Command codes
+#define CMD_BACKWARD        0x00
+#define CMD_FORWARD         0x01
+#define CMD_STOP            0x02
+#define CMD_RIGHT           0x03
+#define CMD_LEFT            0x04
+#define CMD_MANUAL_PWM      0x05
+#define CMD_LED_GREEN       10
+#define CMD_LED_RED         20
+#define CMD_LED_BLUE        30
+#define CMD_LED_ALL         40
 
-// Motor PWM pins
-#define PWM_MOTOR_LEFT      16  // P11
-#define MOTOR_LEFT_DIR      17  // P13
-#define PWM_MOTOR_RIGHT     25  // P3
-#define MOTOR_RIGHT_DIR     26  // P12
+// Extended commands for WiFi/OTA
+#define CMD_WIFI_SET        0x50    // Set WiFi credentials: 0x50 + SSID\0PASSWORD\0
+#define CMD_WIFI_CONNECT    0x51    // Connect to WiFi
+#define CMD_WIFI_DISCONNECT 0x52    // Disconnect from WiFi
+#define CMD_WIFI_STATUS     0x53    // Get WiFi status
+#define CMD_WIFI_CLEAR      0x54    // Clear saved credentials
+#define CMD_OTA_UPDATE      0x60    // Start OTA: 0x60 + URL\0
+#define CMD_OTA_CHECK       0x61    // Check for update: 0x61 + VERSION_URL\0
+#define CMD_GET_VERSION     0x62    // Get firmware version
+#define CMD_GET_INFO        0x63    // Get device info
 
-// LED pins (active LOW)
-#define LED_MAIN            5
-#define LED_RED             27
-#define LED_GREEN           14
-#define LED_BLUE            12
-
-// ============================================================================
-// PWM Configuration
-// ============================================================================
-
-#define PWM_FREQ_HZ         5000
-#define PWM_RESOLUTION      LEDC_TIMER_8_BIT
-#define PWM_CHANNEL_LEFT    LEDC_CHANNEL_0
-#define PWM_CHANNEL_RIGHT   LEDC_CHANNEL_1
-
-// ============================================================================
-// Ramp and Timing Configuration
-// ============================================================================
-
-#define RAMP_START_PWM      100
-#define RAMP_END_PWM        255
-#define RAMP_DURATION_MS    2000
-#define LOOP_DELAY_MS       10
-#define INACTIVITY_MS       300
-#define INACTIVITY_TICKS    (INACTIVITY_MS / LOOP_DELAY_MS)
-
-// ============================================================================
-// BLE UUIDs (Nordic UART Service)
-// ============================================================================
-
-// Service UUID: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
-static uint8_t service_uuid[16] = {
-    0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
-    0x93, 0xF3, 0xA3, 0xB5, 0x01, 0x00, 0x40, 0x6E
-};
-
-// RX UUID: 6E400002-B5A3-F393-E0A9-E50E24DCCA9E
-static uint8_t char_rx_uuid[16] = {
-    0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
-    0x93, 0xF3, 0xA3, 0xB5, 0x02, 0x00, 0x40, 0x6E
-};
-
-// TX UUID: 6E400003-B5A3-F393-E0A9-E50E24DCCA9E
-static uint8_t char_tx_uuid[16] = {
-    0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
-    0x93, 0xF3, 0xA3, 0xB5, 0x03, 0x00, 0x40, 0x6E
-};
-
-// ============================================================================
-// BLE State Variables
-// ============================================================================
-
-static uint16_t gatts_if_global = ESP_GATT_IF_NONE;
-static uint16_t conn_id_global = 0;
-static bool device_connected = false;
-static uint16_t tx_handle = 0;
-static uint16_t tx_cccd_handle = 0;
-static bool tx_notify_enabled = false;
-
-// ============================================================================
-// Motor Control State
-// ============================================================================
-
-static bool ramp_forward_active = false;
-static bool forward_latched = false;
-static uint32_t ramp_start_ms = 0;
-static int inactivity_timer = 0;
-static bool timer_active = false;
-
-// ============================================================================
-// BLE Advertising Data
-// ============================================================================
-
-static esp_ble_adv_params_t adv_params = {
-    .adv_int_min        = 0x20,
-    .adv_int_max        = 0x40,
-    .adv_type           = ADV_TYPE_IND,
-    .own_addr_type      = BLE_ADDR_TYPE_PUBLIC,
-    .channel_map        = ADV_CHNL_ALL,
-    .adv_filter_policy  = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
-};
-
-static uint8_t adv_data[] = {
-    0x02, 0x01, 0x06,                   // Flags: LE General Discoverable, BR/EDR Not Supported
-    0x05, 0x09, 'Z', 'o', 'b', 'o',     // Complete Local Name: "Zobo"
-    0x11, 0x07,                         // Complete List of 128-bit Service UUIDs
-    0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
-    0x93, 0xF3, 0xA3, 0xB5, 0x01, 0x00, 0x40, 0x6E
-};
-
-// ============================================================================
-// GATT Service/Characteristic Handles
-// ============================================================================
-
-enum {
-    IDX_SVC,
-    IDX_CHAR_TX,
-    IDX_CHAR_TX_VAL,
-    IDX_CHAR_TX_CFG,    // CCCD for notifications
-    IDX_CHAR_RX,
-    IDX_CHAR_RX_VAL,
-    IDX_NB,
-};
-
-static uint16_t handle_table[IDX_NB];
-
-// GATT Service Database
-static const esp_gatts_attr_db_t gatt_db[IDX_NB] = {
-    // Service Declaration
-    [IDX_SVC] = {
-        {ESP_GATT_AUTO_RSP},
-        {ESP_UUID_LEN_16, (uint8_t *)&(uint16_t){ESP_GATT_UUID_PRI_SERVICE},
-         ESP_GATT_PERM_READ, sizeof(service_uuid), sizeof(service_uuid), service_uuid}
-    },
-    // TX Characteristic Declaration
-    [IDX_CHAR_TX] = {
-        {ESP_GATT_AUTO_RSP},
-        {ESP_UUID_LEN_16, (uint8_t *)&(uint16_t){ESP_GATT_UUID_CHAR_DECLARE},
-         ESP_GATT_PERM_READ, 1, 1, (uint8_t *)&(uint8_t){ESP_GATT_CHAR_PROP_BIT_NOTIFY}}
-    },
-    // TX Characteristic Value
-    [IDX_CHAR_TX_VAL] = {
-        {ESP_GATT_AUTO_RSP},
-        {ESP_UUID_LEN_128, char_tx_uuid,
-         0, 500, 0, NULL}
-    },
-    // TX CCCD (Client Characteristic Configuration Descriptor)
-    [IDX_CHAR_TX_CFG] = {
-        {ESP_GATT_AUTO_RSP},
-        {ESP_UUID_LEN_16, (uint8_t *)&(uint16_t){ESP_GATT_UUID_CHAR_CLIENT_CONFIG},
-         ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE, 2, 0, NULL}
-    },
-    // RX Characteristic Declaration
-    [IDX_CHAR_RX] = {
-        {ESP_GATT_AUTO_RSP},
-        {ESP_UUID_LEN_16, (uint8_t *)&(uint16_t){ESP_GATT_UUID_CHAR_DECLARE},
-         ESP_GATT_PERM_READ, 1, 1, (uint8_t *)&(uint8_t){ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_WRITE_NR}}
-    },
-    // RX Characteristic Value
-    [IDX_CHAR_RX_VAL] = {
-        {ESP_GATT_RSP_BY_APP},
-        {ESP_UUID_LEN_128, char_rx_uuid,
-         ESP_GATT_PERM_WRITE, 500, 0, NULL}
-    },
-};
-
-// ============================================================================
-// Motor Control Functions
-// ============================================================================
-
-static void motor_init(void)
+// OTA status callback - sends status to BLE
+static void ota_status_callback(int progress, const char *status)
 {
-    // Configure direction pins as outputs
-    gpio_config_t io_conf = {
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_OUTPUT,
-        .pin_bit_mask = (1ULL << MOTOR_LEFT_DIR) | (1ULL << MOTOR_RIGHT_DIR),
-        .pull_down_en = 0,
-        .pull_up_en = 0,
-    };
-    gpio_config(&io_conf);
-
-    // Configure LEDC timer
-    ledc_timer_config_t timer_conf = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .timer_num = LEDC_TIMER_0,
-        .duty_resolution = PWM_RESOLUTION,
-        .freq_hz = PWM_FREQ_HZ,
-        .clk_cfg = LEDC_AUTO_CLK,
-    };
-    ledc_timer_config(&timer_conf);
-
-    // Configure left motor PWM channel
-    ledc_channel_config_t left_conf = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = PWM_CHANNEL_LEFT,
-        .timer_sel = LEDC_TIMER_0,
-        .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = PWM_MOTOR_LEFT,
-        .duty = 0,
-        .hpoint = 0,
-    };
-    ledc_channel_config(&left_conf);
-
-    // Configure right motor PWM channel
-    ledc_channel_config_t right_conf = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = PWM_CHANNEL_RIGHT,
-        .timer_sel = LEDC_TIMER_0,
-        .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = PWM_MOTOR_RIGHT,
-        .duty = 0,
-        .hpoint = 0,
-    };
-    ledc_channel_config(&right_conf);
-
-    ESP_LOGI(TAG, "Motor PWM initialized");
+    char buf[64];
+    snprintf(buf, sizeof(buf), "OTA:%d:%s", progress, status);
+    ble_service_send(buf);
 }
 
-static void motor_set_pwm(uint8_t left, uint8_t right)
+// Process motor/LED commands
+static void process_motor_command(uint8_t cmd, uint8_t param)
 {
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, PWM_CHANNEL_LEFT, left);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, PWM_CHANNEL_LEFT);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, PWM_CHANNEL_RIGHT, right);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, PWM_CHANNEL_RIGHT);
-}
-
-static void motor_set_direction(bool left_high, bool right_high)
-{
-    gpio_set_level(MOTOR_LEFT_DIR, left_high ? 1 : 0);
-    gpio_set_level(MOTOR_RIGHT_DIR, right_high ? 1 : 0);
-}
-
-static void motor_stop(void)
-{
-    motor_set_pwm(0, 0);
-    motor_set_direction(false, false);
-    ramp_forward_active = false;
-    forward_latched = false;
-}
-
-// ============================================================================
-// LED Control Functions
-// ============================================================================
-
-static void led_init(void)
-{
-    gpio_config_t io_conf = {
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_OUTPUT,
-        .pin_bit_mask = (1ULL << LED_MAIN) | (1ULL << LED_RED) |
-                        (1ULL << LED_GREEN) | (1ULL << LED_BLUE),
-        .pull_down_en = 0,
-        .pull_up_en = 0,
-    };
-    gpio_config(&io_conf);
-
-    // Turn off all LEDs (active LOW, so HIGH = off)
-    gpio_set_level(LED_MAIN, 0);
-    gpio_set_level(LED_RED, 1);
-    gpio_set_level(LED_GREEN, 1);
-    gpio_set_level(LED_BLUE, 1);
-
-    ESP_LOGI(TAG, "LEDs initialized");
-}
-
-static void led_set_rgb(bool red, bool green, bool blue)
-{
-    // Active LOW LEDs
-    gpio_set_level(LED_RED, red ? 0 : 1);
-    gpio_set_level(LED_GREEN, green ? 0 : 1);
-    gpio_set_level(LED_BLUE, blue ? 0 : 1);
-}
-
-static void led_startup_sequence(void)
-{
-    // Startup LED sequence like in PlatformIO version
-    gpio_set_level(LED_MAIN, 0);
-    gpio_set_level(LED_RED, 1);
-    gpio_set_level(LED_GREEN, 1);
-    gpio_set_level(LED_BLUE, 1);
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    gpio_set_level(LED_MAIN, 1);
-    gpio_set_level(LED_RED, 0);  // Red on
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    gpio_set_level(LED_BLUE, 0);  // Blue on
-    gpio_set_level(LED_RED, 1);   // Red off
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    gpio_set_level(LED_GREEN, 0); // Green on
-    gpio_set_level(LED_BLUE, 1);  // Blue off
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    gpio_set_level(LED_GREEN, 1); // Green off
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    // All RGB on
-    gpio_set_level(LED_RED, 0);
-    gpio_set_level(LED_GREEN, 0);
-    gpio_set_level(LED_BLUE, 0);
-}
-
-// ============================================================================
-// BLE Send Data
-// ============================================================================
-
-static void ble_send_data(const char *str)
-{
-    if (device_connected && tx_notify_enabled && gatts_if_global != ESP_GATT_IF_NONE) {
-        esp_ble_gatts_send_indicate(gatts_if_global, conn_id_global,
-                                    handle_table[IDX_CHAR_TX_VAL],
-                                    strlen(str), (uint8_t *)str, false);
-    }
-}
-
-// ============================================================================
-// Command Processing
-// ============================================================================
-
-static void process_command(uint8_t *data, uint16_t len)
-{
-    if (len < 1) return;
-
-    uint8_t cmd = data[0];
-    uint8_t param = (len > 1) ? data[1] : 0;
-
-    ESP_LOGI(TAG, "Command: 0x%02X, Param: %d", cmd, param);
-
     switch (cmd) {
-        case 0x00:  // Backward
-            forward_latched = false;
-            ramp_forward_active = false;
-            timer_active = true;
-            inactivity_timer = INACTIVITY_TICKS;
+        case CMD_BACKWARD:
+            motor_cancel_ramp();
+            motor_reset_inactivity();
             motor_set_pwm(100, 100);
             motor_set_direction(true, true);
             ESP_LOGI(TAG, "Moving backward");
             break;
 
-        case 0x01:  // Forward with ramp
-            timer_active = true;
-            inactivity_timer = INACTIVITY_TICKS;
-            motor_set_direction(false, false);
-
-            if (!ramp_forward_active && !forward_latched) {
-                ramp_start_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-                ramp_forward_active = true;
-                motor_set_pwm(RAMP_START_PWM, RAMP_START_PWM);
-                ESP_LOGI(TAG, "Starting forward ramp");
-            }
+        case CMD_FORWARD:
+            motor_reset_inactivity();
+            motor_start_ramp();
             break;
 
-        case 0x02:  // Stop
-            forward_latched = false;
-            ramp_forward_active = false;
+        case CMD_STOP:
+            motor_cancel_ramp();
             motor_stop();
-            gpio_set_level(LED_MAIN, 0);
-            vTaskDelay(pdMS_TO_TICKS(20));
-            gpio_set_level(LED_MAIN, 0);
+            led_set_main(false);
             ESP_LOGI(TAG, "Stopped");
             break;
 
-        case 0x03:  // Right
-            forward_latched = false;
-            ramp_forward_active = false;
-            timer_active = true;
-            inactivity_timer = INACTIVITY_TICKS;
+        case CMD_RIGHT:
+            motor_cancel_ramp();
+            motor_reset_inactivity();
             motor_set_pwm(150, 255 - 150);
             motor_set_direction(true, false);
             ESP_LOGI(TAG, "Turning right");
             break;
 
-        case 0x04:  // Left
-            forward_latched = false;
-            ramp_forward_active = false;
-            timer_active = true;
-            inactivity_timer = INACTIVITY_TICKS;
+        case CMD_LEFT:
+            motor_cancel_ramp();
+            motor_reset_inactivity();
             motor_set_pwm(255 - 150, 150);
             motor_set_direction(false, true);
             ESP_LOGI(TAG, "Turning left");
             break;
 
-        case 0x05:  // Manual PWM control
-            forward_latched = false;
-            ramp_forward_active = false;
-            timer_active = true;
-            inactivity_timer = INACTIVITY_TICKS;
-
+        case CMD_MANUAL_PWM:
+            motor_cancel_ramp();
+            motor_reset_inactivity();
             if (param >= 50) {
                 motor_set_pwm(180 - (param - 50), 180 + (param - 50));
             } else {
@@ -415,209 +108,221 @@ static void process_command(uint8_t *data, uint16_t len)
             ESP_LOGI(TAG, "Manual PWM: %d", param);
             break;
 
-        case 10:  // Green LED
+        case CMD_LED_GREEN:
             led_set_rgb(false, true, false);
             ESP_LOGI(TAG, "LED: Green");
             break;
 
-        case 20:  // Red LED
+        case CMD_LED_RED:
             led_set_rgb(true, false, false);
             ESP_LOGI(TAG, "LED: Red");
             break;
 
-        case 30:  // Blue LED
+        case CMD_LED_BLUE:
             led_set_rgb(false, false, true);
             ESP_LOGI(TAG, "LED: Blue");
             break;
 
-        case 40:  // All LEDs
+        case CMD_LED_ALL:
             led_set_rgb(true, true, true);
             ESP_LOGI(TAG, "LED: All");
             break;
+    }
+}
 
-        default:
-            ESP_LOGW(TAG, "Unknown command: 0x%02X", cmd);
+// WiFi connect task
+static void wifi_connect_task(void *arg)
+{
+    char response[128];
+    vTaskDelay(pdMS_TO_TICKS(500)); // Give BLE time to finish
+
+    if (wifi_manager_connect() == ESP_OK) {
+        snprintf(response, sizeof(response), "WIFI:CONNECTED:%s",
+                 wifi_manager_get_ip());
+    } else {
+        snprintf(response, sizeof(response), "WIFI:ERR:Connection failed");
+    }
+    ble_service_send(response);
+    vTaskDelete(NULL);
+}
+
+// Process WiFi commands
+static void process_wifi_command(uint8_t cmd, uint8_t *data, uint16_t len)
+{
+    char response[128];
+
+    switch (cmd) {
+        case CMD_WIFI_SET: {
+            // Format: SSID\0PASSWORD\0
+            if (len < 2) {
+                ble_service_send("WIFI:ERR:Invalid data");
+                return;
+            }
+
+            // Debug: log raw data
+            ESP_LOGI(TAG, "WiFi SET raw data len=%d:", len);
+            for (int i = 0; i < len && i < 64; i++) {
+                ESP_LOGI(TAG, "  [%d] = 0x%02X '%c'", i, data[i], (data[i] >= 32 && data[i] < 127) ? data[i] : '.');
+            }
+
+            char *ssid = (char *)data;
+            char *password = ssid + strlen(ssid) + 1;
+
+            ESP_LOGI(TAG, "Parsed SSID='%s' (len=%d), Password='***' (len=%d)",
+                     ssid, strlen(ssid), strlen(password));
+
+            if (wifi_manager_set_credentials(ssid, password) == ESP_OK) {
+                snprintf(response, sizeof(response), "WIFI:OK:Saved %s", ssid);
+            } else {
+                snprintf(response, sizeof(response), "WIFI:ERR:Save failed");
+            }
+            ble_service_send(response);
+            break;
+        }
+
+        case CMD_WIFI_CONNECT:
+            ble_service_send("WIFI:CONNECTING");
+            // Start WiFi connection in a separate task to avoid BLE/WiFi coexistence issues
+            xTaskCreate(wifi_connect_task, "wifi_connect", 4096, NULL, 5, NULL);
+            break;
+
+        case CMD_WIFI_DISCONNECT:
+            wifi_manager_disconnect();
+            ble_service_send("WIFI:DISCONNECTED");
+            break;
+
+        case CMD_WIFI_STATUS: {
+            wifi_status_t status = wifi_manager_get_status();
+            const char *status_str[] = {"DISCONNECTED", "CONNECTING", "CONNECTED", "FAILED"};
+            if (status == WIFI_STATUS_CONNECTED) {
+                snprintf(response, sizeof(response), "WIFI:%s:%s",
+                         status_str[status], wifi_manager_get_ip());
+            } else {
+                snprintf(response, sizeof(response), "WIFI:%s", status_str[status]);
+            }
+            ble_service_send(response);
+            break;
+        }
+
+        case CMD_WIFI_CLEAR:
+            wifi_manager_clear_credentials();
+            ble_service_send("WIFI:CLEARED");
             break;
     }
 }
 
-// ============================================================================
-// BLE GAP Event Handler
-// ============================================================================
-
-static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
+// Process OTA commands
+static void process_ota_command(uint8_t cmd, uint8_t *data, uint16_t len)
 {
-    switch (event) {
-        case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
-            esp_ble_gap_start_advertising(&adv_params);
-            break;
+    char response[128];
 
-        case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
-            if (param->adv_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
-                ESP_LOGI(TAG, "Advertising started");
+    switch (cmd) {
+        case CMD_OTA_UPDATE: {
+            if (len < 1) {
+                ble_service_send("OTA:ERR:No URL");
+                return;
+            }
+            char *url = (char *)data;
+
+            // Check WiFi connection
+            if (wifi_manager_get_status() != WIFI_STATUS_CONNECTED) {
+                ble_service_send("OTA:ERR:WiFi not connected");
+                return;
+            }
+
+            if (ota_manager_start_update(url) == ESP_OK) {
+                ble_service_send("OTA:STARTED");
+            } else {
+                ble_service_send("OTA:ERR:Failed to start");
             }
             break;
+        }
 
-        default:
+        case CMD_OTA_CHECK: {
+            if (len < 1) {
+                ble_service_send("OTA:ERR:No URL");
+                return;
+            }
+            char *url = (char *)data;
+
+            if (wifi_manager_get_status() != WIFI_STATUS_CONNECTED) {
+                ble_service_send("OTA:ERR:WiFi not connected");
+                return;
+            }
+
+            bool update_available = false;
+            if (ota_manager_check_update(url, &update_available) == ESP_OK) {
+                snprintf(response, sizeof(response), "OTA:CHECK:%s",
+                         update_available ? "AVAILABLE" : "UP_TO_DATE");
+            } else {
+                snprintf(response, sizeof(response), "OTA:ERR:Check failed");
+            }
+            ble_service_send(response);
+            break;
+        }
+
+        case CMD_GET_VERSION:
+            snprintf(response, sizeof(response), "VERSION:%s", ota_manager_get_version());
+            ble_service_send(response);
+            break;
+
+        case CMD_GET_INFO:
+            snprintf(response, sizeof(response), "INFO:Zobo v%s,WiFi:%s",
+                     ota_manager_get_version(),
+                     wifi_manager_has_credentials() ? "configured" : "not_set");
+            ble_service_send(response);
             break;
     }
 }
 
-// ============================================================================
-// BLE GATTS Event Handler
-// ============================================================================
-
-static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
-                                esp_ble_gatts_cb_param_t *param)
+// BLE command handler
+static void ble_command_handler(uint8_t *data, uint16_t len)
 {
-    switch (event) {
-        case ESP_GATTS_REG_EVT:
-            ESP_LOGI(TAG, "GATT server registered");
-            gatts_if_global = gatts_if;
+    if (len < 1) return;
 
-            // Set advertising data
-            esp_ble_gap_config_adv_data_raw(adv_data, sizeof(adv_data));
+    uint8_t cmd = data[0];
+    uint8_t param = (len > 1) ? data[1] : 0;
 
-            // Create attribute table
-            esp_ble_gatts_create_attr_tab(gatt_db, gatts_if, IDX_NB, 0);
-            break;
+    ESP_LOGI(TAG, "Command: 0x%02X, len: %d", cmd, len);
 
-        case ESP_GATTS_CREAT_ATTR_TAB_EVT:
-            if (param->add_attr_tab.status == ESP_GATT_OK) {
-                memcpy(handle_table, param->add_attr_tab.handles, sizeof(handle_table));
-                tx_handle = handle_table[IDX_CHAR_TX_VAL];
-                tx_cccd_handle = handle_table[IDX_CHAR_TX_CFG];
-                esp_ble_gatts_start_service(handle_table[IDX_SVC]);
-                ESP_LOGI(TAG, "Service started");
-            }
-            break;
-
-        case ESP_GATTS_CONNECT_EVT:
-            ESP_LOGI(TAG, "Device connected");
-            device_connected = true;
-            conn_id_global = param->connect.conn_id;
-            break;
-
-        case ESP_GATTS_DISCONNECT_EVT:
-            ESP_LOGI(TAG, "Device disconnected");
-            device_connected = false;
-            tx_notify_enabled = false;
-            motor_stop();
-            esp_ble_gap_start_advertising(&adv_params);
-            break;
-
-        case ESP_GATTS_WRITE_EVT:
-            if (param->write.handle == handle_table[IDX_CHAR_RX_VAL]) {
-                // RX characteristic - process command
-                process_command(param->write.value, param->write.len);
-                ble_send_data("6.25");
-
-                // Send response if needed
-                if (param->write.need_rsp) {
-                    esp_ble_gatts_send_response(gatts_if, param->write.conn_id,
-                                               param->write.trans_id, ESP_GATT_OK, NULL);
-                }
-            } else if (param->write.handle == tx_cccd_handle) {
-                // CCCD write - enable/disable notifications
-                if (param->write.len == 2) {
-                    uint16_t cccd_value = param->write.value[0] | (param->write.value[1] << 8);
-                    tx_notify_enabled = (cccd_value == 0x0001);
-                    ESP_LOGI(TAG, "TX notifications %s", tx_notify_enabled ? "enabled" : "disabled");
-                }
-            }
-            break;
-
-        default:
-            break;
+    // Route command to appropriate handler
+    if (cmd <= CMD_LED_ALL) {
+        process_motor_command(cmd, param);
+        ble_service_send("OK");
+    } else if (cmd >= CMD_WIFI_SET && cmd <= CMD_WIFI_CLEAR) {
+        process_wifi_command(cmd, data + 1, len - 1);
+    } else if (cmd >= CMD_OTA_UPDATE && cmd <= CMD_GET_INFO) {
+        process_ota_command(cmd, data + 1, len - 1);
+    } else {
+        ESP_LOGW(TAG, "Unknown command: 0x%02X", cmd);
+        ble_service_send("ERR:Unknown");
     }
 }
 
-// ============================================================================
-// BLE Initialization
-// ============================================================================
-
-static void ble_init(void)
+// Control loop task
+static void control_loop_task(void *arg)
 {
-    esp_err_t ret;
+    const TickType_t delay = pdMS_TO_TICKS(10);
+
+    while (1) {
+        motor_update_ramp();
+        motor_check_inactivity();
+        vTaskDelay(delay);
+    }
+}
+
+// Main entry point
+void app_main(void)
+{
+    ESP_LOGI(TAG, "Zobo ESP32 Robot Controller v%s Starting...", ota_manager_get_version());
 
     // Initialize NVS
-    ret = nvs_flash_init();
+    esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
-
-    // Release classic BT memory
-    ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
-
-    // Initialize BT controller
-    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
-    ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
-
-    // Initialize Bluedroid
-    ESP_ERROR_CHECK(esp_bluedroid_init());
-    ESP_ERROR_CHECK(esp_bluedroid_enable());
-
-    // Register callbacks
-    ESP_ERROR_CHECK(esp_ble_gatts_register_callback(gatts_event_handler));
-    ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));
-    ESP_ERROR_CHECK(esp_ble_gatts_app_register(0));
-
-    // Set MTU
-    ESP_ERROR_CHECK(esp_ble_gatt_set_local_mtu(500));
-
-    ESP_LOGI(TAG, "BLE initialized");
-}
-
-// ============================================================================
-// Main Control Loop Task
-// ============================================================================
-
-static void control_loop_task(void *arg)
-{
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(LOOP_DELAY_MS));
-
-        // Handle forward ramp
-        if (ramp_forward_active) {
-            uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-            uint32_t elapsed = now - ramp_start_ms;
-
-            if (elapsed >= RAMP_DURATION_MS) {
-                motor_set_pwm(RAMP_END_PWM, RAMP_END_PWM);
-                ramp_forward_active = false;
-                forward_latched = true;
-                ESP_LOGI(TAG, "Ramp complete, latched at max");
-            } else {
-                uint16_t pwm_now = RAMP_START_PWM +
-                    (uint32_t)(RAMP_END_PWM - RAMP_START_PWM) * elapsed / RAMP_DURATION_MS;
-                motor_set_pwm(pwm_now, pwm_now);
-            }
-        }
-
-        // Handle inactivity timeout
-        if (inactivity_timer > 0) {
-            inactivity_timer--;
-        } else if (timer_active) {
-            timer_active = false;
-            ramp_forward_active = false;
-            forward_latched = false;
-            motor_set_pwm(0, 0);
-            motor_set_direction(false, false);
-            ESP_LOGI(TAG, "Inactivity timeout - motors stopped");
-        }
-    }
-}
-
-// ============================================================================
-// Main Entry Point
-// ============================================================================
-
-void app_main(void)
-{
-    ESP_LOGI(TAG, "Zobo ESP32 Robot Controller Starting...");
 
     // Initialize hardware
     led_init();
@@ -626,10 +331,18 @@ void app_main(void)
     // Run LED startup sequence
     led_startup_sequence();
 
-    // Initialize BLE
-    ble_init();
+    // Initialize WiFi manager (loads saved credentials)
+    wifi_manager_init();
 
-    ESP_LOGI(TAG, "BLE ready, waiting for connection...");
+    // Initialize OTA manager
+    ota_manager_init();
+    ota_manager_set_callback(ota_status_callback);
+
+    // Initialize BLE
+    ble_service_init();
+    ble_service_set_callback(ble_command_handler);
+
+    ESP_LOGI(TAG, "Ready! Waiting for BLE connection...");
 
     // Start control loop task
     xTaskCreate(control_loop_task, "control_loop", 4096, NULL, 5, NULL);

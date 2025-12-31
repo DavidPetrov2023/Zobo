@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'services/ble_service.dart';
 import 'widgets/hold_repeat_button.dart';
+import 'pages/settings_page.dart';
 
 void main() {
   runApp(const ZoboApp());
@@ -129,6 +130,22 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('Zobo Controller'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: _isConnected
+                ? () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => SettingsPage(bleService: _bleService),
+                      ),
+                    );
+                  }
+                : null,
+            tooltip: 'Settings',
+          ),
+        ],
       ),
       body: SafeArea(
         child: Padding(

@@ -18,6 +18,8 @@ Zobo/
 - **Plynulá akcelerace** - Rampa vpřed z PWM 100 na 255 během 2 sekund
 - **Bezpečnostní timeout** - Automatické zastavení po 300ms nečinnosti
 - **RGB LED ovládání** - Stavová indikace pomocí RGB LED
+- **OTA aktualizace** - Vzdálená aktualizace firmware přes WiFi
+- **WiFi konfigurace** - Nastavení WiFi přes BLE z mobilní aplikace
 - **Multiplatformní aplikace** - Flutter aplikace pro Android (připraveno i pro iOS)
 
 ## Hardware
@@ -58,6 +60,20 @@ Zobo/
 | LED modrá | `0x1E` (30) | Nastavení LED na modrou |
 | LED vše | `0x28` (40) | Zapnutí všech LED |
 
+### WiFi a OTA příkazy
+
+| Příkaz | Hodnota | Popis |
+|--------|---------|-------|
+| WiFi Set | `0x50` | Nastavení WiFi credentials (SSID\0PASSWORD\0) |
+| WiFi Connect | `0x51` | Připojení k WiFi |
+| WiFi Disconnect | `0x52` | Odpojení od WiFi |
+| WiFi Status | `0x53` | Dotaz na stav WiFi |
+| WiFi Clear | `0x54` | Smazání uložených credentials |
+| OTA Update | `0x60` | Spuštění OTA aktualizace (URL\0) |
+| OTA Check | `0x61` | Kontrola dostupnosti aktualizace |
+| Get Version | `0x62` | Dotaz na verzi firmware |
+| Get Info | `0x63` | Dotaz na informace o zařízení |
+
 ## Sestavení
 
 ### Flutter aplikace (zobo_flutter)
@@ -70,11 +86,47 @@ flutter build apk --release
 
 ### ESP-IDF firmware (zobo_esp32)
 
+**Požadavky:**
+- ESP-IDF v5.0+ (doporučeno v5.2)
+- Python 3.8+
+
+**Instalace ESP-IDF (Windows):**
+1. Stáhněte [ESP-IDF Tools Installer](https://dl.espressif.com/dl/esp-idf/)
+2. Nainstalujte s výchozím nastavením
+3. Spusťte "ESP-IDF 5.x CMD" nebo "ESP-IDF 5.x PowerShell"
+
+**Sestavení a nahrání:**
 ```bash
 cd zobo_esp32
 idf.py build
 idf.py -p COM9 flash monitor
 ```
+
+**Poznámky:**
+- Port `COM9` nahraďte skutečným portem vašeho ESP32 (zjistíte v Správci zařízení)
+- První build může trvat několik minut
+- Pro ukončení monitoru stiskněte `Ctrl+]`
+
+### OTA aktualizace firmware
+
+Robot podporuje vzdálenou aktualizaci firmware přes WiFi:
+
+1. **Nastavení WiFi** - V aplikaci přejděte do Settings a zadejte SSID a heslo WiFi
+2. **Připojení** - Klikněte na "Connect" a počkejte na připojení
+3. **Nahrání firmware** - Zadejte URL firmware souboru (.bin) a spusťte aktualizaci
+
+**Hosting firmware:**
+Pro OTA aktualizace potřebujete HTTP server s firmware souborem:
+```bash
+# Vytvoření firmware
+cd zobo_esp32
+idf.py build
+
+# Firmware je v: build/zobo_esp32.bin
+# Nahrajte na svůj server (např. GitHub Releases, vlastní server)
+```
+
+**Příklad URL:** `http://example.com/firmware/zobo_esp32.bin`
 
 ## Požadavky
 
@@ -94,6 +146,10 @@ Flutter aplikace poskytuje:
 - Tlačítka pro ovládání RGB LED
 - Zobrazení stavu připojení
 - Prohlížeč logu příkazů
+- **Settings stránka:**
+  - Konfigurace WiFi (SSID, heslo)
+  - OTA aktualizace firmware
+  - Zobrazení verze firmware
 
 ## Licence
 
