@@ -109,24 +109,52 @@ idf.py -p COM9 flash monitor
 
 ### OTA aktualizace firmware
 
-Robot podporuje vzdálenou aktualizaci firmware přes WiFi:
+Robot podporuje vzdálenou aktualizaci firmware přes WiFi. Pro snadnou automatizaci použijte přiložené skripty.
 
-1. **Nastavení WiFi** - V aplikaci přejděte do Settings a zadejte SSID a heslo WiFi
-2. **Připojení** - Klikněte na "Connect" a počkejte na připojení
-3. **Nahrání firmware** - Zadejte URL firmware souboru (.bin) a spusťte aktualizaci
-
-**Hosting firmware:**
-Pro OTA aktualizace potřebujete HTTP server s firmware souborem:
+**Automatizovaný OTA server (doporučeno):**
 ```bash
-# Vytvoření firmware
 cd zobo_esp32
-idf.py build
 
-# Firmware je v: build/zobo_esp32.bin
-# Nahrajte na svůj server (např. GitHub Releases, vlastní server)
+# Plný workflow: clean → build → flash → server
+python ota_server.py
+
+# Pouze build a server (bez flash)
+python ota_server.py -n
+
+# Pouze server (bez build)
+python ota_server.py -s
+
+# Použít jiný COM port
+python ota_server.py --port COM5
 ```
 
-**Příklad URL:** `http://example.com/firmware/zobo_esp32.bin`
+Skript automaticky:
+- Najde ESP-IDF instalaci (z VS Code nastavení nebo standardních cest)
+- Zbuildí firmware
+- Vytvoří `version.json` s verzí a datem buildu
+- Spustí HTTP server na portu 8080
+
+**Serial monitor:**
+```bash
+python monitor.py        # Výchozí COM9
+python monitor.py COM5   # Jiný port
+python monitor.py --list # Seznam dostupných portů
+```
+
+**Aktualizace z aplikace:**
+1. **Nastavení WiFi** - V aplikaci přejděte do Settings a zadejte SSID a heslo WiFi
+2. **Připojení** - Klikněte na "Connect" a počkejte na připojení
+3. **Kontrola verze** - Aplikace automaticky zkontroluje dostupnou verzi na serveru
+4. **Start Update** - Klikněte pro spuštění OTA aktualizace s progress barem
+
+**Manuální hosting:**
+```bash
+cd zobo_esp32
+idf.py build
+python -m http.server 8080 --directory build
+```
+
+**Příklad URL:** `http://192.168.0.60:8080/zobo_esp32.bin`
 
 ## Požadavky
 
@@ -148,8 +176,9 @@ Flutter aplikace poskytuje:
 - Prohlížeč logu příkazů
 - **Settings stránka:**
   - Konfigurace WiFi (SSID, heslo)
-  - OTA aktualizace firmware
-  - Zobrazení verze firmware
+  - OTA aktualizace firmware s progress barem
+  - Automatická detekce dostupných aktualizací
+  - Zobrazení verze firmware (aktuální i serverová)
 
 ## Licence
 

@@ -25,6 +25,7 @@ class _SettingsPageState extends State<SettingsPage> {
   String _wifiStatus = 'Unknown';
   String _firmwareVersion = 'Unknown';
   String _otaStatus = '';
+  int _otaProgress = 0;
   bool _isConnecting = false;
   bool _isUpdating = false;
 
@@ -75,7 +76,15 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() {
       _ssidController.text = prefs.getString('wifi_ssid') ?? '';
       _passwordController.text = prefs.getString('wifi_password') ?? '';
-      _otaUrlController.text = prefs.getString('ota_url') ?? '';
+      // Don't overwrite OTA URL if already set by server check
+      final savedUrl = prefs.getString('ota_url') ?? '';
+      if (_otaUrlController.text.isEmpty && savedUrl.isNotEmpty) {
+        _otaUrlController.text = savedUrl;
+      }
+      // Set default if still empty
+      if (_otaUrlController.text.isEmpty) {
+        _otaUrlController.text = '$otaServerBase/zobo_esp32.bin';
+      }
     });
   }
 
@@ -115,7 +124,8 @@ class _SettingsPageState extends State<SettingsPage> {
           final progress = int.tryParse(parts[0]) ?? -1;
           final status = parts.sublist(1).join(':');
           if (progress >= 0) {
-            _otaStatus = '$status ($progress%)';
+            _otaProgress = progress;
+            _otaStatus = status;
           } else {
             _otaStatus = status;
           }
@@ -123,13 +133,50 @@ class _SettingsPageState extends State<SettingsPage> {
           _otaStatus = parts[0];
         }
 
-        if (_otaStatus.contains('complete') ||
-            _otaStatus.contains('failed') ||
-            _otaStatus.contains('ERR')) {
+        if (_otaStatus.contains('complete')) {
+          _isUpdating = false;
+          _otaProgress = 100;
+          // Show success dialog
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (mounted) {
+              _showUpdateCompleteDialog();
+            }
+          });
+        } else if (_otaStatus.contains('failed') || _otaStatus.contains('ERR')) {
           _isUpdating = false;
         }
       }
     });
+  }
+
+  void _showUpdateCompleteDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.check_circle, color: Colors.green),
+            SizedBox(width: 8),
+            Text('Update Complete'),
+          ],
+        ),
+        content: const Text(
+          'Firmware has been updated successfully!\n\n'
+          'The device is restarting. Please wait a moment and then reconnect via Bluetooth.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              // Go back to main screen to reconnect
+              Navigator.pop(context);
+            },
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _requestDeviceInfo() {
@@ -450,7 +497,7 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
             const SizedBox(height: 12),
-            if (_otaStatus.isNotEmpty) ...[
+            if (_isUpdating || _otaStatus.isNotEmpty) ...[
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -459,23 +506,42 @@ class _SettingsPageState extends State<SettingsPage> {
                       : Colors.blue.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    if (_isUpdating)
-                      const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    else
-                      Icon(
-                        _otaStatus.contains('ERR') || _otaStatus.contains('failed')
-                            ? Icons.error
-                            : Icons.info,
-                        size: 16,
+                    Row(
+                      children: [
+                        if (_isUpdating)
+                          const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        else
+                          Icon(
+                            _otaStatus.contains('ERR') || _otaStatus.contains('failed')
+                                ? Icons.error
+                                : _otaStatus.contains('complete') ? Icons.check_circle : Icons.info,
+                            size: 16,
+                            color: _otaStatus.contains('complete') ? Colors.green : null,
+                          ),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(_otaStatus)),
+                        if (_isUpdating) Text('$_otaProgress%', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    if (_isUpdating) ...[
+                      const SizedBox(height: 8),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: _otaProgress / 100,
+                          minHeight: 8,
+                          backgroundColor: Colors.grey.shade300,
+                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.blue),
+                        ),
                       ),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(_otaStatus)),
+                    ],
                   ],
                 ),
               ),
@@ -492,9 +558,35 @@ class _SettingsPageState extends State<SettingsPage> {
                               context: context,
                               builder: (ctx) => AlertDialog(
                                 title: const Text('Start Update?'),
-                                content: const Text(
-                                  'The device will download and install the new firmware. '
-                                  'Make sure the device is connected to WiFi and has stable power.',
+                                content: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    if (_serverVersion != null) ...[
+                                      Row(
+                                        children: [
+                                          const Text('Current version: '),
+                                          Text(_firmwareVersion, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Row(
+                                        children: [
+                                          const Text('New version: '),
+                                          Text(_serverVersion!, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                                        ],
+                                      ),
+                                      if (_serverDate != null) ...[
+                                        const SizedBox(height: 4),
+                                        Text('Built: $_serverDate', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                                      ],
+                                      const SizedBox(height: 16),
+                                    ],
+                                    const Text(
+                                      'The device will download and install the new firmware. '
+                                      'Make sure the device is connected to WiFi and has stable power.',
+                                    ),
+                                  ],
                                 ),
                                 actions: [
                                   TextButton(
@@ -506,6 +598,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                       Navigator.pop(ctx);
                                       setState(() {
                                         _isUpdating = true;
+                                        _otaProgress = 0;
                                         _otaStatus = 'Starting update...';
                                       });
                                       widget.bleService.startOtaUpdate(_otaUrlController.text);
