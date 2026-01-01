@@ -164,3 +164,6 @@ coverage/
 .cache/
 tmp/
 temp/
+
+# Project TODO
+TODO.md
