@@ -1,7 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/ble_service.dart';
+
+// OTA Server configuration - change this to your server IP
+const String otaServerBase = 'http://192.168.0.60:8080';
 
 class SettingsPage extends StatefulWidget {
   final BleService bleService;
@@ -23,6 +28,12 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _isConnecting = false;
   bool _isUpdating = false;
 
+  // Server version info
+  String? _serverVersion;
+  String? _serverDate;
+  bool _updateAvailable = false;
+  bool _checkingUpdate = false;
+
   StreamSubscription<String>? _responseSubscription;
 
   @override
@@ -31,6 +42,32 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadSavedCredentials();
     _setupResponseListener();
     _requestDeviceInfo();
+    _checkForUpdates();
+  }
+
+  Future<void> _checkForUpdates() async {
+    setState(() => _checkingUpdate = true);
+    try {
+      final response = await http.get(
+        Uri.parse('$otaServerBase/version.json'),
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        setState(() {
+          _serverVersion = data['version'];
+          _serverDate = data['date'];
+          _updateAvailable = _serverVersion != null &&
+              _serverVersion != _firmwareVersion &&
+              _firmwareVersion != 'Unknown';
+          _otaUrlController.text = '$otaServerBase/zobo_esp32.bin';
+        });
+      }
+    } catch (e) {
+      // Server not available - that's fine
+    } finally {
+      setState(() => _checkingUpdate = false);
+    }
   }
 
   Future<void> _loadSavedCredentials() async {
@@ -327,21 +364,89 @@ class _SettingsPageState extends State<SettingsPage> {
                   'Firmware Update (OTA)',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
+                const Spacer(),
+                if (_checkingUpdate)
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else if (_updateAvailable)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.green,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Text(
+                      'NEW',
+                      style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ),
               ],
             ),
             const Divider(),
-            const Text(
-              'Enter the URL of the firmware binary (.bin) file:',
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 8),
+            if (_serverVersion != null) ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _updateAvailable ? Colors.green.withOpacity(0.1) : Colors.grey.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Server version:', style: TextStyle(fontWeight: FontWeight.w500)),
+                        Text(_serverVersion!, style: TextStyle(
+                          color: _updateAvailable ? Colors.green : null,
+                          fontWeight: _updateAvailable ? FontWeight.bold : null,
+                        )),
+                      ],
+                    ),
+                    if (_serverDate != null) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text('Built:', style: TextStyle(fontWeight: FontWeight.w500)),
+                          Text(_serverDate!, style: const TextStyle(fontSize: 12)),
+                        ],
+                      ),
+                    ],
+                    if (_updateAvailable) ...[
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Update available!',
+                        style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                      ),
+                    ] else ...[
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Firmware is up to date',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ] else ...[
+              const Text(
+                'OTA server not available. Enter URL manually:',
+                style: TextStyle(color: Colors.grey),
+              ),
+              const SizedBox(height: 8),
+            ],
             TextField(
               controller: _otaUrlController,
               decoration: const InputDecoration(
                 labelText: 'Firmware URL',
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.link),
-                hintText: 'http://example.com/firmware.bin',
+                hintText: 'http://192.168.0.60:8080/zobo_esp32.bin',
               ),
             ),
             const SizedBox(height: 12),
@@ -424,6 +529,21 @@ class _SettingsPageState extends State<SettingsPage> {
               ],
             ),
             const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Server: $otaServerBase',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: _checkingUpdate ? null : _checkForUpdates,
+                  icon: const Icon(Icons.refresh, size: 16),
+                  label: const Text('Check'),
+                ),
+              ],
+            ),
             Text(
               'Note: WiFi must be connected before starting OTA update.',
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
