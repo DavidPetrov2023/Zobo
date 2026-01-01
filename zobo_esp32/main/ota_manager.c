@@ -11,8 +11,13 @@
 #include "esp_ota_ops.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
+#include "esp_crt_bundle.h"
 
 static const char *TAG = "OTA";
+
+// Embedded CA certificate for GitHub (DigiCert Global Root G2)
+extern const uint8_t github_ca_pem_start[] asm("_binary_github_ca_pem_start");
+extern const uint8_t github_ca_pem_end[] asm("_binary_github_ca_pem_end");
 
 static ota_status_callback_t s_callback = NULL;
 static bool s_ota_in_progress = false;
@@ -37,10 +42,15 @@ static void ota_task(void *pvParameter)
     notify_status(0, "Starting OTA update");
     led_indicate_ota_progress();
 
+    // Check if URL is HTTPS (GitHub) or HTTP (local server)
+    bool is_https = (strncmp(params->url, "https://", 8) == 0);
+
     esp_http_client_config_t config = {
         .url = params->url,
         .timeout_ms = 30000,
         .keep_alive_enable = true,
+        .cert_pem = is_https ? (const char *)github_ca_pem_start : NULL,
+        .skip_cert_common_name_check = is_https,  // GitHub uses CDN with different hostnames
     };
 
     esp_https_ota_config_t ota_config = {

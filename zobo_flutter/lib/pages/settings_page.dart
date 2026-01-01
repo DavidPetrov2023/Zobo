@@ -5,8 +5,15 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/ble_service.dart';
 
-// OTA Server configuration - change this to your server IP
-const String otaServerBase = 'http://192.168.0.60:8080';
+// OTA Server configuration
+// GitHub Releases URL for production
+const String otaServerGitHub = 'https://github.com/DavidPetrov2023/Zobo/releases/latest/download';
+// Local server for development
+const String otaServerLocal = 'http://192.168.0.60:8080';
+// Set to true to use GitHub Releases, false for local development server
+const bool useGitHubReleases = true;
+// Active server base URL
+const String otaServerBase = useGitHubReleases ? otaServerGitHub : otaServerLocal;
 
 class SettingsPage extends StatefulWidget {
   final BleService bleService;

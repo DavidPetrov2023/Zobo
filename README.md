@@ -157,14 +157,34 @@ python monitor.py --list # Seznam dostupných portů
 - Na Windows může být potřeba povolit port 8080 ve firewallu
 - Firmware používá anti-rollback ochranu - po úspěšném bootu se nová verze potvrdí
 
-**Manuální hosting:**
+**GitHub Releases (produkce):**
+
+Pro vzdálené aktualizace odkudkoliv na světě:
 ```bash
 cd zobo_esp32
-idf.py build
-python -m http.server 8080 --directory build
+
+# Vytvořit GitHub release (vyžaduje gh CLI)
+python release.py
+
+# Nebo jako draft
+python release.py --draft
 ```
 
-**Příklad URL:** `http://192.168.0.60:8080/zobo_esp32.bin`
+Skript automaticky:
+- Zbuildí firmware
+- Vytvoří version.json
+- Nahraje na GitHub Releases
+
+Aplikace pak automaticky stahuje z:
+`https://github.com/DavidPetrov2023/Zobo/releases/latest/download/`
+
+**Lokální server (development):**
+```bash
+cd zobo_esp32
+python ota_server.py
+```
+
+V aplikaci přepnout na lokální server: `settings_page.dart` → `useGitHubReleases = false`
 
 ## Požadavky
 
