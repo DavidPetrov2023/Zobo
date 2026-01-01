@@ -12,7 +12,7 @@
 typedef void (*ota_status_callback_t)(int progress, const char *status);
 
 // Firmware version info
-#define FIRMWARE_VERSION "1.0.3"
+#define FIRMWARE_VERSION "1.0.7"
 
 // Initialize OTA manager
 esp_err_t ota_manager_init(void);

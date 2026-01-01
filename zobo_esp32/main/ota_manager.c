@@ -16,8 +16,6 @@
 static const char *TAG = "OTA";
 
 // Embedded CA certificate for GitHub (DigiCert Global Root G2)
-extern const uint8_t github_ca_pem_start[] asm("_binary_github_ca_pem_start");
-extern const uint8_t github_ca_pem_end[] asm("_binary_github_ca_pem_end");
 
 static ota_status_callback_t s_callback = NULL;
 static bool s_ota_in_progress = false;
@@ -49,8 +47,10 @@ static void ota_task(void *pvParameter)
         .url = params->url,
         .timeout_ms = 30000,
         .keep_alive_enable = true,
-        .cert_pem = is_https ? (const char *)github_ca_pem_start : NULL,
-        .skip_cert_common_name_check = is_https,  // GitHub uses CDN with different hostnames
+        .crt_bundle_attach = is_https ? esp_crt_bundle_attach : NULL,  // Use ESP-IDF cert bundle for HTTPS
+        .buffer_size = 1024,           // HTTP receive buffer
+        .buffer_size_tx = 1024,        // HTTP transmit buffer
+        .max_redirection_count = 10,   // GitHub uses redirects
     };
 
     esp_https_ota_config_t ota_config = {
