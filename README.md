@@ -145,7 +145,17 @@ python monitor.py --list # Seznam dostupných portů
 1. **Nastavení WiFi** - V aplikaci přejděte do Settings a zadejte SSID a heslo WiFi
 2. **Připojení** - Klikněte na "Connect" a počkejte na připojení
 3. **Kontrola verze** - Aplikace automaticky zkontroluje dostupnou verzi na serveru
-4. **Start Update** - Klikněte pro spuštění OTA aktualizace s progress barem
+4. **Start Update** - Zobrazí dialog s porovnáním verzí:
+   - **Update Available** (zelená) - novější verze k dispozici
+   - **Reinstall** (oranžová) - stejná verze, varování před reinstalací
+   - **Downgrade** (červená) - starší verze, varování před downgradem
+5. **Progress bar** - Průběh stahování firmware v reálném čase
+6. **Auto-restart** - Po úspěšné aktualizaci se ESP32 automaticky restartuje
+
+**Poznámky k OTA:**
+- ESP32 i telefon musí být na stejné WiFi síti jako OTA server
+- Na Windows může být potřeba povolit port 8080 ve firewallu
+- Firmware používá anti-rollback ochranu - po úspěšném bootu se nová verze potvrdí
 
 **Manuální hosting:**
 ```bash

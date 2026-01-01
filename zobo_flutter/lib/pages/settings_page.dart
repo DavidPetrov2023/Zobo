@@ -47,7 +47,10 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _checkForUpdates() async {
-    setState(() => _checkingUpdate = true);
+    setState(() {
+      _checkingUpdate = true;
+      _serverVersion = null; // Reset before check
+    });
     try {
       final response = await http.get(
         Uri.parse('$otaServerBase/version.json'),
@@ -65,7 +68,8 @@ class _SettingsPageState extends State<SettingsPage> {
         });
       }
     } catch (e) {
-      // Server not available - that's fine
+      // Server not available
+      debugPrint('OTA server check failed: $e');
     } finally {
       setState(() => _checkingUpdate = false);
     }
@@ -147,6 +151,156 @@ class _SettingsPageState extends State<SettingsPage> {
         }
       }
     });
+  }
+
+  /// Compare two version strings (e.g., "1.2.0" vs "1.3.0")
+  /// Returns: -1 if v1 < v2, 0 if equal, 1 if v1 > v2
+  int _compareVersions(String v1, String v2) {
+    final parts1 = v1.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final parts2 = v2.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+
+    // Pad shorter version with zeros
+    while (parts1.length < parts2.length) parts1.add(0);
+    while (parts2.length < parts1.length) parts2.add(0);
+
+    for (int i = 0; i < parts1.length; i++) {
+      if (parts1[i] < parts2[i]) return -1;
+      if (parts1[i] > parts2[i]) return 1;
+    }
+    return 0;
+  }
+
+  void _showUpdateDialog() async {
+    // Refresh server version before showing dialog
+    await _checkForUpdates();
+
+    if (!mounted) return;
+
+    // Determine if server version is actually newer
+    final bool isNewer = _serverVersion != null &&
+        _firmwareVersion != 'Unknown' &&
+        _compareVersions(_firmwareVersion, _serverVersion!) < 0;
+
+    final bool isSame = _serverVersion != null &&
+        _firmwareVersion != 'Unknown' &&
+        _compareVersions(_firmwareVersion, _serverVersion!) == 0;
+
+    final bool isOlder = _serverVersion != null &&
+        _firmwareVersion != 'Unknown' &&
+        _compareVersions(_firmwareVersion, _serverVersion!) > 0;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(
+              isNewer ? Icons.system_update : Icons.warning,
+              color: isNewer ? Colors.green : Colors.orange,
+            ),
+            const SizedBox(width: 8),
+            Text(isNewer ? 'Update Available' : 'Version Check'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Always show current version from ESP32
+            Row(
+              children: [
+                const Text('Current version: '),
+                Text(_firmwareVersion, style: const TextStyle(fontWeight: FontWeight.bold)),
+              ],
+            ),
+            const SizedBox(height: 4),
+            // Show server version if available
+            Row(
+              children: [
+                const Text('Server version: '),
+                Text(_serverVersion ?? 'Unknown', style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: isNewer ? Colors.green : (isOlder ? Colors.orange : null),
+                )),
+              ],
+            ),
+            if (_serverDate != null) ...[
+              const SizedBox(height: 4),
+              Text('Built: $_serverDate', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+            ],
+            const SizedBox(height: 16),
+            if (isSame) ...[
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.info, color: Colors.orange, size: 20),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'You already have this version installed. Are you sure you want to reinstall?',
+                        style: TextStyle(color: Colors.orange),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ] else if (isOlder) ...[
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.red.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.warning, color: Colors.red, size: 20),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Warning: Server has an OLDER version! This will downgrade your firmware.',
+                        style: TextStyle(color: Colors.red),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+            const Text(
+              'The device will download and install the firmware. '
+              'Make sure the device is connected to WiFi and has stable power.',
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() {
+                _isUpdating = true;
+                _otaProgress = 0;
+                _otaStatus = 'Starting update...';
+              });
+              widget.bleService.startOtaUpdate(_otaUrlController.text);
+            },
+            child: Text(
+              isNewer ? 'Update' : (isSame ? 'Reinstall' : 'Downgrade'),
+              style: TextStyle(color: isNewer ? null : Colors.orange),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showUpdateCompleteDialog() {
@@ -553,62 +707,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   child: ElevatedButton.icon(
                     onPressed: _isUpdating || _otaUrlController.text.isEmpty
                         ? null
-                        : () {
-                            showDialog(
-                              context: context,
-                              builder: (ctx) => AlertDialog(
-                                title: const Text('Start Update?'),
-                                content: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    if (_serverVersion != null) ...[
-                                      Row(
-                                        children: [
-                                          const Text('Current version: '),
-                                          Text(_firmwareVersion, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Row(
-                                        children: [
-                                          const Text('New version: '),
-                                          Text(_serverVersion!, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-                                        ],
-                                      ),
-                                      if (_serverDate != null) ...[
-                                        const SizedBox(height: 4),
-                                        Text('Built: $_serverDate', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-                                      ],
-                                      const SizedBox(height: 16),
-                                    ],
-                                    const Text(
-                                      'The device will download and install the new firmware. '
-                                      'Make sure the device is connected to WiFi and has stable power.',
-                                    ),
-                                  ],
-                                ),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(ctx),
-                                    child: const Text('Cancel'),
-                                  ),
-                                  TextButton(
-                                    onPressed: () {
-                                      Navigator.pop(ctx);
-                                      setState(() {
-                                        _isUpdating = true;
-                                        _otaProgress = 0;
-                                        _otaStatus = 'Starting update...';
-                                      });
-                                      widget.bleService.startOtaUpdate(_otaUrlController.text);
-                                    },
-                                    child: const Text('Update'),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
+                        : () => _showUpdateDialog(),
                     icon: _isUpdating
                         ? const SizedBox(
                             width: 16,
