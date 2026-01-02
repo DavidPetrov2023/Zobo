@@ -22,6 +22,7 @@
 #include "ble_service.h"
 #include "wifi_manager.h"
 #include "ota_manager.h"
+#include "sleep_manager.h"
 
 static const char *TAG = "ZOBO";
 
@@ -47,6 +48,7 @@ static const char *TAG = "ZOBO";
 #define CMD_OTA_CHECK       0x61    // Check for update: 0x61 + VERSION_URL\0
 #define CMD_GET_VERSION     0x62    // Get firmware version
 #define CMD_GET_INFO        0x63    // Get device info
+#define CMD_PING            0x70    // Keepalive ping
 
 // OTA status callback - sends status to BLE
 static void ota_status_callback(int progress, const char *status)
@@ -280,6 +282,9 @@ static void ble_command_handler(uint8_t *data, uint16_t len)
 {
     if (len < 1) return;
 
+    // Reset sleep timer on any BLE command
+    sleep_manager_reset();
+
     uint8_t cmd = data[0];
     uint8_t param = (len > 1) ? data[1] : 0;
 
@@ -293,6 +298,9 @@ static void ble_command_handler(uint8_t *data, uint16_t len)
         process_wifi_command(cmd, data + 1, len - 1);
     } else if (cmd >= CMD_OTA_UPDATE && cmd <= CMD_GET_INFO) {
         process_ota_command(cmd, data + 1, len - 1);
+    } else if (cmd == CMD_PING) {
+        // Keepalive ping - just reset sleep timer (already done above)
+        // No response needed to reduce traffic
     } else {
         ESP_LOGW(TAG, "Unknown command: 0x%02X", cmd);
         ble_service_send("ERR:Unknown");
@@ -314,6 +322,10 @@ static void control_loop_task(void *arg)
 // Main entry point
 void app_main(void)
 {
+    // Check if woke from deep sleep - if so, blink and sleep again
+    // This must be FIRST to avoid full initialization
+    sleep_manager_check_wake();
+
     ESP_LOGI(TAG, "Zobo ESP32 Robot Controller v%s Starting...", ota_manager_get_version());
 
     // Initialize NVS
@@ -328,7 +340,7 @@ void app_main(void)
     led_init();
     motor_init();
 
-    // Run LED startup sequence
+    // Run LED startup sequence (only on fresh boot, not from sleep)
     led_startup_sequence();
 
     // Initialize WiFi manager (loads saved credentials)
@@ -341,6 +353,9 @@ void app_main(void)
     // Initialize BLE
     ble_service_init();
     ble_service_set_callback(ble_command_handler);
+
+    // Initialize sleep manager
+    sleep_manager_init();
 
     ESP_LOGI(TAG, "Ready! Waiting for BLE connection...");
 

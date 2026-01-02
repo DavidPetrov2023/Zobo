@@ -28,6 +28,7 @@ class ExtendedCommands {
   static const int otaCheck = 0x61;
   static const int getVersion = 0x62;
   static const int getInfo = 0x63;
+  static const int ping = 0x70;  // Keepalive ping
 }
 
 class BleService {
@@ -43,6 +44,7 @@ class BleService {
   StreamSubscription? _scanSubscription;
   StreamSubscription? _connectionSubscription;
   StreamSubscription? _notificationSubscription;
+  Timer? _keepaliveTimer;
 
   final _isScanning = StreamController<bool>.broadcast();
   final _isConnected = StreamController<bool>.broadcast();
@@ -165,6 +167,7 @@ class BleService {
       _connected = true;
       _isConnected.add(true);
       _deviceName.add(_connectedDeviceName);
+      _startKeepalive();
       _addLog("Ready", "UART service initialized");
     } catch (e) {
       _addLog("Error", "Service discovery failed: $e");
@@ -172,7 +175,22 @@ class BleService {
     }
   }
 
+  void _startKeepalive() {
+    _keepaliveTimer?.cancel();
+    _keepaliveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (_connected) {
+        sendBytes([ExtendedCommands.ping]);
+      }
+    });
+  }
+
+  void _stopKeepalive() {
+    _keepaliveTimer?.cancel();
+    _keepaliveTimer = null;
+  }
+
   Future<void> disconnect() async {
+    _stopKeepalive();
     _notificationSubscription?.cancel();
     _connectionSubscription?.cancel();
 
