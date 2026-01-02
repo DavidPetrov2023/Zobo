@@ -24,8 +24,8 @@ Zobo/
 ### Flutter aplikace
 ```bash
 cd zobo_flutter
-flutter pub get
-flutter build apk --release
+python build_install.py        # Build + instalace do telefonu
+python build_install.py -d     # Build s debug logem
 ```
 
 ### ESP32 firmware
@@ -37,11 +37,8 @@ python build_flash.py -n       # Jen build
 
 ### OTA aktualizace
 ```bash
-# GitHub release (produkce)
+# GitHub release
 python release.py
-
-# Lokální server (development)
-python ota_server.py
 ```
 
 ## Hardware

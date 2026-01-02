@@ -6,6 +6,8 @@ import 'services/ble_service.dart';
 import 'widgets/hold_repeat_button.dart';
 import 'pages/settings_page.dart';
 
+const bool kDebugMode = bool.fromEnvironment('DEBUG_MODE', defaultValue: false);
+
 void main() {
   runApp(const ZoboApp());
 }
@@ -112,6 +114,19 @@ class _HomePageState extends State<HomePage> {
     setState(() => _logMessages.clear());
   }
 
+  void _showAboutDialog(BuildContext context) {
+    showAboutDialog(
+      context: context,
+      applicationName: 'Zobo Controller',
+      applicationVersion: '1.0.0',
+      applicationLegalese: '© 2024 David Petrov',
+      children: [
+        const SizedBox(height: 16),
+        const Text('ESP32 BLE robot controller app'),
+      ],
+    );
+  }
+
   @override
   void dispose() {
     _scanSubscription.cancel();
@@ -131,6 +146,11 @@ class _HomePageState extends State<HomePage> {
         title: const Text('Zobo Controller'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: () => _showAboutDialog(context),
+            tooltip: 'About',
+          ),
           IconButton(
             icon: const Icon(Icons.settings),
             onPressed: _isConnected
@@ -162,8 +182,10 @@ class _HomePageState extends State<HomePage> {
               _buildActionButtons(),
               const SizedBox(height: 16),
               _buildDPad(),
-              const SizedBox(height: 16),
-              _buildLogSection(),
+              if (kDebugMode) ...[
+                const SizedBox(height: 16),
+                _buildLogSection(),
+              ],
             ],
           ),
         ),
@@ -311,11 +333,13 @@ class _HomePageState extends State<HomePage> {
             style: ElevatedButton.styleFrom(backgroundColor: Colors.yellow.shade100),
             child: const Text("Light"),
           ),
-          const SizedBox(width: 16),
-          OutlinedButton(
-            onPressed: _clearLog,
-            child: const Text("Clear Log"),
-          ),
+          if (kDebugMode) ...[
+            const SizedBox(width: 16),
+            OutlinedButton(
+              onPressed: _clearLog,
+              child: const Text("Clear Log"),
+            ),
+          ],
         ],
       ),
     );
