@@ -7,6 +7,7 @@ class HoldRepeatButton extends StatefulWidget {
   final bool enabled;
   final int repeatMs;
   final VoidCallback onRepeat;
+  final VoidCallback? onRelease;
   final double? width;
   final double? height;
 
@@ -17,6 +18,7 @@ class HoldRepeatButton extends StatefulWidget {
     required this.enabled,
     this.repeatMs = 100,
     required this.onRepeat,
+    this.onRelease,
     this.width,
     this.height,
   });
@@ -49,6 +51,7 @@ class _HoldRepeatButtonState extends State<HoldRepeatButton> {
     _timer = null;
     if (mounted) {
       setState(() => _isPressed = false);
+      widget.onRelease?.call();
     }
   }
 

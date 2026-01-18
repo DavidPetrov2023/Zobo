@@ -24,7 +24,7 @@ static const char *TAG = "MOTOR";
 #define PWM_CHANNEL_RIGHT   LEDC_CHANNEL_1
 
 // Ramp Configuration
-#define RAMP_START_PWM      100
+#define RAMP_START_PWM      150
 #define RAMP_END_PWM        255
 #define RAMP_DURATION_MS    2000
 #define LOOP_DELAY_MS       10

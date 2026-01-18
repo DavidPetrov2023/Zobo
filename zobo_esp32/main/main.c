@@ -65,7 +65,7 @@ static void process_motor_command(uint8_t cmd, uint8_t param)
         case CMD_BACKWARD:
             motor_cancel_ramp();
             motor_reset_inactivity();
-            motor_set_pwm(100, 100);
+            motor_set_pwm(50, 50);
             motor_set_direction(true, true);
             ESP_LOGI(TAG, "Moving backward");
             break;
@@ -85,16 +85,16 @@ static void process_motor_command(uint8_t cmd, uint8_t param)
         case CMD_RIGHT:
             motor_cancel_ramp();
             motor_reset_inactivity();
-            motor_set_pwm(150, 255 - 150);
-            motor_set_direction(true, false);
+            motor_set_pwm(200, 255 - 200);
+            motor_set_direction(false, true);
             ESP_LOGI(TAG, "Turning right");
             break;
 
         case CMD_LEFT:
             motor_cancel_ramp();
             motor_reset_inactivity();
-            motor_set_pwm(255 - 150, 150);
-            motor_set_direction(false, true);
+            motor_set_pwm(255 - 200, 200);
+            motor_set_direction(true, false);
             ESP_LOGI(TAG, "Turning left");
             break;
 
