@@ -6,14 +6,28 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/ble_service.dart';
 
 // OTA Server configuration
-// GitHub Releases URL for production
-const String otaServerGitHub = 'https://github.com/DavidPetrov2023/Zobo/releases/latest/download';
-// Local server for development
+// Production: Petrov Elektronika OTA endpoint (requires OTA_DOWNLOAD_TOKEN).
+const String otaServerProd = 'https://petrovelektronika.cz/robot/api.php';
+// Local server for development (plain static file server, ignores token).
 const String otaServerLocal = 'http://192.168.0.60:8080';
-// Set to true to use GitHub Releases, false for local development server
-const bool useGitHubReleases = true;
-// Active server base URL
-const String otaServerBase = useGitHubReleases ? otaServerGitHub : otaServerLocal;
+// Set false to use the local dev server during development.
+const bool useProductionServer = true;
+
+// Active base URL.
+const String otaServerBase = useProductionServer ? otaServerProd : otaServerLocal;
+// Token required by the production endpoint. Must match OTA_DOWNLOAD_TOKEN
+// in the WebPetrov .env file. Leave empty when targeting otaServerLocal.
+const String otaToken = 'd67d8cb76cb731e4dab9e17703a2414c6f58b655';
+
+// URL the app polls to learn the latest available version.
+String _otaVersionUrl() => useProductionServer
+    ? '$otaServerBase?action=version&token=$otaToken'
+    : '$otaServerBase/version.json';
+
+// Fallback download URL when version.json doesn't carry a url field.
+String _otaDownloadUrl() => useProductionServer
+    ? '$otaServerBase?action=download&token=$otaToken'
+    : '$otaServerBase/zobo_esp32.bin';
 
 class SettingsPage extends StatefulWidget {
   final BleService bleService;
@@ -43,6 +57,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _checkingUpdate = false;
 
   StreamSubscription<String>? _responseSubscription;
+  Timer? _wifiPollTimer;
 
   @override
   void initState() {
@@ -51,16 +66,25 @@ class _SettingsPageState extends State<SettingsPage> {
     _setupResponseListener();
     _requestDeviceInfo();
     _checkForUpdates();
+    _startWifiStatusPolling();
   }
 
-  Future<void> _checkForUpdates() async {
+  void _startWifiStatusPolling() {
+    _wifiPollTimer?.cancel();
+    _wifiPollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      widget.bleService.getWifiStatus();
+    });
+  }
+
+  Future<void> _checkForUpdates({bool showMessage = false}) async {
     setState(() {
       _checkingUpdate = true;
       _serverVersion = null; // Reset before check
     });
+    String? errorMessage;
     try {
       final response = await http.get(
-        Uri.parse('$otaServerBase/version.json'),
+        Uri.parse(_otaVersionUrl()),
       ).timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
@@ -71,14 +95,38 @@ class _SettingsPageState extends State<SettingsPage> {
           _updateAvailable = _serverVersion != null &&
               _serverVersion != _firmwareVersion &&
               _firmwareVersion != 'Unknown';
-          _otaUrlController.text = '$otaServerBase/zobo_esp32.bin';
+          // Prefer the URL the server tells us; fall back to a constructed one.
+          _otaUrlController.text = (data['url'] as String?) ?? _otaDownloadUrl();
         });
+        if (showMessage && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Server version: ${_serverVersion ?? "?"}')),
+          );
+        }
+      } else {
+        errorMessage = 'Server vrátil HTTP ${response.statusCode}';
       }
+    } on TimeoutException {
+      errorMessage = 'Timeout — server neodpověděl do 5s';
+    } on http.ClientException catch (e) {
+      errorMessage = 'Chyba sítě: ${e.message}';
     } catch (e) {
-      // Server not available
-      debugPrint('OTA server check failed: $e');
+      errorMessage = 'Chyba: $e';
     } finally {
       setState(() => _checkingUpdate = false);
+    }
+
+    if (errorMessage != null) {
+      debugPrint('OTA server check failed: $errorMessage');
+      if (showMessage && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     }
   }
 
@@ -94,7 +142,7 @@ class _SettingsPageState extends State<SettingsPage> {
       }
       // Set default if still empty
       if (_otaUrlController.text.isEmpty) {
-        _otaUrlController.text = '$otaServerBase/zobo_esp32.bin';
+        _otaUrlController.text = _otaDownloadUrl();
       }
     });
   }
@@ -349,6 +397,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
+    _wifiPollTimer?.cancel();
     _responseSubscription?.cancel();
     _ssidController.dispose();
     _passwordController.dispose();
@@ -494,7 +543,14 @@ class _SettingsPageState extends State<SettingsPage> {
                   child: ElevatedButton.icon(
                     onPressed: _isConnecting
                         ? null
-                        : () {
+                        : () async {
+                            if (_ssidController.text.isNotEmpty) {
+                              await _saveCredentials();
+                              await widget.bleService.setWifiCredentials(
+                                _ssidController.text,
+                                _passwordController.text,
+                              );
+                            }
                             setState(() => _isConnecting = true);
                             widget.bleService.connectWifi();
                           },
@@ -737,7 +793,9 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 TextButton.icon(
-                  onPressed: _checkingUpdate ? null : _checkForUpdates,
+                  onPressed: _checkingUpdate
+                      ? null
+                      : () => _checkForUpdates(showMessage: true),
                   icon: const Icon(Icons.refresh, size: 16),
                   label: const Text('Check'),
                 ),

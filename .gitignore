@@ -167,3 +167,9 @@ temp/
 
 # Project TODO
 TODO.md
+
+# Claude Code local agent state
+.claude/
+
+# Large media not intended for git
+video/pasovy podvozek 2026.mp4

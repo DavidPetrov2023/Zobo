@@ -15,7 +15,8 @@ Zobo/
 
 - BLE ovládání (Nordic UART Service)
 - Duální PWM řízení motorů s plynulou akcelerací
-- OTA aktualizace firmware přes WiFi (GitHub Releases)
+- OTA aktualizace firmware přes vlastní server (`petrovelektronika.cz/robot/`)
+- Periodická telemetrie do `/devices/` dashboardu (každých 30s)
 - WiFi konfigurace přes BLE
 - RGB LED indikace stavu
 - Deep sleep s úsporným režimem (~10µA)
@@ -34,10 +35,49 @@ python build_install.py -c     # Clean build
 ### ESP32 firmware
 ```bash
 cd zobo_esp32
-python build_flash.py          # Build + flash
-python build_flash.py -n       # Jen build
-python release.py              # Vytvořit GitHub release pro OTA
+python build_flash.py          # Build + flash přes USB
+python build_flash.py -n       # Jen build (bez flashe)
 ```
+
+## OTA Release (vlastní server)
+
+Firmware se distribuuje přes `petrovelektronika.cz/robot/`, ne přes GitHub.
+Telefonní app stáhne version.json, robot pak stáhne binárku přes URL s tokenem.
+
+### Setup (jednorázově)
+
+1. **Na serveru** v `/var/www/html/.env`:
+   ```
+   ADMIN_ACCESS_KEY=<sdílený klíč pro admin endpointy>
+   OTA_DOWNLOAD_TOKEN=<token pro firmware download>
+   ```
+2. **Lokálně** vytvoř `zobo_esp32/.env`:
+   ```
+   ADMIN_ACCESS_KEY=<stejný jako na serveru>
+   ```
+3. **Ve Flutter** v `lib/pages/settings_page.dart` nastav `otaToken` na hodnotu `OTA_DOWNLOAD_TOKEN`.
+4. **Nginx**: `client_max_body_size 16M;` v `/etc/nginx/nginx.conf` (default 1MB stačí na 1.3MB firmware).
+
+### Release flow
+
+```bash
+# 1. Bumpni verzi v zobo_esp32/main/ota_manager.h (FIRMWARE_VERSION)
+# 2. Build + upload na server v jednom kroku:
+cd zobo_esp32
+python release_server.py --notes "Changelog popis"
+
+# 3. V telefonní appce: Settings → Check for Updates → Update
+#    (ESP stáhne novou binárku ze serveru přes WiFi)
+```
+
+Skripty:
+- `release_server.py` — build + POST na `/robot/api.php` (aktuální flow)
+- `release.py` — starý GitHub Releases flow (ponechán jako fallback, nepoužívat)
+
+### Admin URL
+
+- `https://petrovelektronika.cz/robot/?key=<ADMIN_KEY>` — release management + endpoint URL
+- `https://petrovelektronika.cz/devices/?key=<ADMIN_KEY>` — live telemetrie všech zařízení
 
 ## Hardware
 

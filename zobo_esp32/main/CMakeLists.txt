@@ -5,5 +5,6 @@ idf_component_register(SRCS "main.c"
                             "wifi_manager.c"
                             "ota_manager.c"
                             "sleep_manager.c"
+                            "telemetry.c"
                        INCLUDE_DIRS "."
                        EMBED_TXTFILES "certs/github_ca.pem")

@@ -6,6 +6,7 @@
 
 #include "sleep_manager.h"
 #include "led.h"
+#include "wifi_manager.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -63,6 +64,14 @@ static void enter_deep_sleep(void)
 static void sleep_task(void *arg)
 {
     while (1) {
+        // Never sleep while WiFi is connected — keep timer fresh so we don't
+        // immediately sleep the moment WiFi drops.
+        if (wifi_manager_get_status() == WIFI_STATUS_CONNECTED) {
+            last_activity_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
         uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
         uint32_t inactive_time = now - last_activity_time;
 

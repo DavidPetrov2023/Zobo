@@ -118,3 +118,63 @@ void led_indicate_ota_fail(void)
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
+
+// ============================================================================
+// OTA progress blinker — accelerating blue blink, solid at 100%.
+// ============================================================================
+
+static volatile int s_ota_progress = -1;
+static TaskHandle_t s_ota_led_task = NULL;
+
+static void ota_led_task(void *arg)
+{
+    bool on = false;
+    while (1) {
+        int p = s_ota_progress;
+        if (p < 0) break;                     // Stopped externally
+
+        if (p >= 100) {
+            // Final flourish: solid blue for 2 s, then off.
+            led_set_rgb(false, false, true);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            led_set_rgb(false, false, false);
+            s_ota_progress = -1;
+            break;
+        }
+
+        on = !on;
+        led_set_rgb(false, false, on);
+
+        // Period shrinks from ~800 ms (slow) at 0 % down to ~30 ms at 99 %.
+        int period_ms = 800 - p * 8;
+        if (period_ms < 30) period_ms = 30;
+        vTaskDelay(pdMS_TO_TICKS(period_ms / 2));
+    }
+
+    led_set_rgb(false, false, false);
+    s_ota_led_task = NULL;
+    vTaskDelete(NULL);
+}
+
+void led_ota_set_progress(int progress)
+{
+    s_ota_progress = progress;
+
+    if (progress >= 0 && s_ota_led_task == NULL) {
+        xTaskCreate(ota_led_task, "ota_led", 2048, NULL, 4, &s_ota_led_task);
+    }
+}
+
+// ============================================================================
+// Telemetry pulse — short green flash signalling a successful POST.
+// ============================================================================
+
+void led_telemetry_pulse(void)
+{
+    // Don't fight the OTA blue blinker while an update is running.
+    if (s_ota_progress >= 0) return;
+
+    led_set_rgb(false, true, false);   // Green ON
+    vTaskDelay(pdMS_TO_TICKS(60));
+    led_set_rgb(false, false, false);  // Off
+}

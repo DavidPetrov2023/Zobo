@@ -23,6 +23,7 @@
 #include "wifi_manager.h"
 #include "ota_manager.h"
 #include "sleep_manager.h"
+#include "telemetry.h"
 
 static const char *TAG = "ZOBO";
 
@@ -50,12 +51,20 @@ static const char *TAG = "ZOBO";
 #define CMD_GET_INFO        0x63    // Get device info
 #define CMD_PING            0x70    // Keepalive ping
 
-// OTA status callback - sends status to BLE
+// OTA status callback - sends status to BLE + drives the blue LED.
 static void ota_status_callback(int progress, const char *status)
 {
     char buf[64];
     snprintf(buf, sizeof(buf), "OTA:%d:%s", progress, status);
     ble_service_send(buf);
+
+    // Drive the blue LED. On failure stop the blinker so we don't blink forever.
+    if (status && (strstr(status, "fail") || strstr(status, "ERR"))) {
+        led_ota_set_progress(-1);
+        led_set_rgb(true, false, false);  // Solid red signals failure
+    } else {
+        led_ota_set_progress(progress);
+    }
 }
 
 // Process motor/LED commands
@@ -357,7 +366,17 @@ void app_main(void)
     // Initialize sleep manager
     sleep_manager_init();
 
+    // Initialize telemetry (periodic status POST to /devices/ dashboard).
+    // Each successful POST briefly flashes the green LED — see telemetry.c.
+    telemetry_init();
+
     ESP_LOGI(TAG, "Ready! Waiting for BLE connection...");
+
+    // Auto-connect to WiFi if credentials are saved
+    if (wifi_manager_has_credentials()) {
+        ESP_LOGI(TAG, "Found saved WiFi credentials, auto-connecting...");
+        xTaskCreate(wifi_connect_task, "wifi_autoconnect", 4096, NULL, 5, NULL);
+    }
 
     // Start control loop task
     xTaskCreate(control_loop_task, "control_loop", 4096, NULL, 5, NULL);

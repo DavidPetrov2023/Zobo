@@ -26,4 +26,14 @@ void led_indicate_ota_progress(void);
 void led_indicate_ota_success(void);
 void led_indicate_ota_fail(void);
 
+// Drive the blue LED to blink during OTA — slow at 0 %, faster as progress
+// rises, solid on at 100 %. Safe to call from event callback (non-blocking).
+// Pass progress < 0 to stop blinking.
+void led_ota_set_progress(int progress);
+
+// Brief (~60 ms) green flash to acknowledge a successful telemetry POST.
+// Skips itself if OTA is in progress so it does not interrupt the blue blinker.
+// Blocking; call from a task context (not from an ISR).
+void led_telemetry_pulse(void);
+
 #endif // LED_H
