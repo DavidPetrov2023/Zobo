@@ -24,6 +24,7 @@
 #include "ota_manager.h"
 #include "sleep_manager.h"
 #include "telemetry.h"
+#include "power_mode.h"
 
 static const char *TAG = "ZOBO";
 
@@ -331,19 +332,40 @@ static void control_loop_task(void *arg)
 // Main entry point
 void app_main(void)
 {
-    // Check if woke from deep sleep - if so, blink and sleep again
-    // This must be FIRST to avoid full initialization
-    sleep_manager_check_wake();
-
-    ESP_LOGI(TAG, "Zobo ESP32 Robot Controller v%s Starting...", ota_manager_get_version());
-
-    // Initialize NVS
+    // Initialize NVS first so we can read the persisted power mode before
+    // committing to either the SLEEP-cycle path or the full ACTIVE init.
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    // SLEEP power mode: skip BLE/motor/full telemetry. Just bring up WiFi,
+    // POST once, let the server queue a "wake" if it wants us active. Then
+    // deep-sleep for 10 minutes (or longer if WiFi fails). Never returns.
+    power_mode_t mode = power_mode_load();
+    if (mode == POWER_MODE_SLEEP) {
+        ESP_LOGI(TAG, "Booting in SLEEP mode (v%s)", ota_manager_get_version());
+        led_init();
+        wifi_manager_init();
+        // Init OTA manager so a queued "ota_update" can still run during the
+        // SLEEP check-in. We deliberately do NOT register the BLE-bound status
+        // callback — BLE isn't initialised in this mode.
+        ota_manager_init();
+        telemetry_sleep_cycle();
+        // never returns
+    }
+
+    // ACTIVE mode — full initialisation.
+    //
+    // Intentionally do NOT call sleep_manager_check_wake() / sleep_manager_init()
+    // here: the legacy BLE-only 15 s-inactivity deep sleep fights the telemetry
+    // retry loop. If WiFi drops briefly the sleep manager would force a deep
+    // sleep, then re-sleep on every 10 s wake without ever reconnecting →
+    // device becomes unreachable. Deep-sleeping is now controlled exclusively
+    // by the explicit POWER_MODE_SLEEP path (web "Uspat" button).
+    ESP_LOGI(TAG, "Zobo ESP32 Robot Controller v%s Starting in ACTIVE mode", ota_manager_get_version());
 
     // Initialize hardware
     led_init();
@@ -354,6 +376,12 @@ void app_main(void)
 
     // Initialize WiFi manager (loads saved credentials)
     wifi_manager_init();
+    // Auto-connect on boot if we have credentials. Without this the robot
+    // would sit on BLE-only until the phone explicitly pushes CMD_WIFI_CONNECT,
+    // which breaks the "Probudit" flow (after wake there is no phone in the loop).
+    if (wifi_manager_has_credentials()) {
+        wifi_manager_connect();
+    }
 
     // Initialize OTA manager
     ota_manager_init();
@@ -363,8 +391,7 @@ void app_main(void)
     ble_service_init();
     ble_service_set_callback(ble_command_handler);
 
-    // Initialize sleep manager
-    sleep_manager_init();
+    // sleep_manager_init() intentionally omitted — see note above.
 
     // Initialize telemetry (periodic status POST to /devices/ dashboard).
     // Each successful POST briefly flashes the green LED — see telemetry.c.

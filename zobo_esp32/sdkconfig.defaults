@@ -81,3 +81,10 @@ CONFIG_LOG_DEFAULT_LEVEL=3
 # NVS (for WiFi credentials storage)
 # ============================================================================
 CONFIG_NVS_ENCRYPTION=n
+
+# ============================================================================
+# Main task stack size — bumped from default 3584 B so SLEEP-mode boot can
+# do HTTPS POST directly from app_main() without stack overflow during the
+# TLS handshake (~6 KB) + cJSON parsing.
+# ============================================================================
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=10240

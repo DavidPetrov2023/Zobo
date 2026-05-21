@@ -23,10 +23,16 @@
 #include "esp_timer.h"
 #include "cJSON.h"
 
+#include "esp_sleep.h"
+#include "esp_system.h"
+
 #include "telemetry.h"
 #include "wifi_manager.h"
 #include "ota_manager.h"
 #include "led.h"
+#include "power_mode.h"
+
+#define SLEEP_CYCLE_S         (10 * 60)  // deep sleep duration when in SLEEP mode
 
 static const char *TAG = "TELEMETRY";
 
@@ -37,6 +43,10 @@ static const char *TAG = "TELEMETRY";
 
 static char s_device_id[20] = {0};
 static TaskHandle_t s_telemetry_task = NULL;
+// Set when ota_manager_start_update() is dispatched from a sleep-cycle wake,
+// so telemetry_sleep_cycle() knows NOT to deep-sleep — that would kill the
+// OTA download mid-flight. OTA task reboots the device on completion.
+static volatile bool s_ota_dispatched = false;
 
 typedef struct {
     char buf[RESPONSE_BUF_SIZE];
@@ -91,6 +101,7 @@ static char *build_payload(void)
     cJSON_AddNumberToObject(live, "Uptime", (double)uptime_s);
     cJSON_AddNumberToObject(live, "ErrorCode", 0);
     cJSON_AddStringToObject(live, "EventState", "idle");
+    cJSON_AddStringToObject(live, "PowerMode", power_mode_str(power_mode_load()));
 
     cJSON *product = cJSON_AddObjectToObject(root, "ProductInfo");
     // Field name matches the auto-detect key in devices/api.php
@@ -144,10 +155,35 @@ static void handle_server_command(const char *response_body)
                 ESP_LOGI(TAG, "Server-triggered OTA: version=%s, url=%s",
                          version ? version : "?", url);
                 esp_err_t r = ota_manager_start_update(url);
-                if (r != ESP_OK) {
+                if (r == ESP_OK) {
+                    s_ota_dispatched = true;
+                } else {
                     ESP_LOGE(TAG, "OTA start failed: %s", esp_err_to_name(r));
                 }
             }
+        } else if (action && strcmp(action, "wake") == 0) {
+            if (power_mode_load() == POWER_MODE_ACTIVE) {
+                ESP_LOGI(TAG, "wake received but already ACTIVE — no-op");
+            } else {
+                ESP_LOGI(TAG, "Server-triggered wake: switching to ACTIVE mode");
+                cJSON_Delete(root);
+                power_mode_save(POWER_MODE_ACTIVE);
+                vTaskDelay(pdMS_TO_TICKS(200));  // flush logs
+                esp_restart();
+                // never returns
+            }
+        } else if (action && strcmp(action, "sleep") == 0) {
+            // Persist SLEEP mode and enter deep sleep immediately. Safe to call
+            // even if already SLEEP — the next boot will just go through the
+            // sleep cycle once more.
+            ESP_LOGI(TAG, "Server-triggered sleep: entering %ds deep sleep", SLEEP_CYCLE_S);
+            cJSON_Delete(root);
+            power_mode_save(POWER_MODE_SLEEP);
+            led_set_rgb(false, false, false);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_sleep_enable_timer_wakeup((uint64_t)SLEEP_CYCLE_S * 1000000ULL);
+            esp_deep_sleep_start();
+            // never returns
         } else {
             ESP_LOGW(TAG, "Unknown command action: %s", action ? action : "(null)");
         }
@@ -200,16 +236,18 @@ static esp_err_t post_telemetry(void)
 
 static void telemetry_task(void *arg)
 {
+    uint32_t tick = 0;
     while (1) {
         // Wait up to the interval, OR until on_got_ip() notifies us.
-        // First boot: just wait the interval — WiFi event handler will fire
-        // as soon as DHCP completes and wake us early.
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TELEMETRY_INTERVAL_S * 1000));
 
-        if (wifi_manager_get_status() == WIFI_STATUS_CONNECTED) {
+        tick++;
+        wifi_status_t wstatus = wifi_manager_get_status();
+        if (wstatus == WIFI_STATUS_CONNECTED) {
+            ESP_LOGI(TAG, "tick #%lu — posting", (unsigned long)tick);
             post_telemetry();
         } else {
-            ESP_LOGD(TAG, "Skip (WiFi not connected)");
+            ESP_LOGW(TAG, "tick #%lu — skip, WiFi status=%d", (unsigned long)tick, wstatus);
         }
     }
 }
@@ -232,4 +270,59 @@ esp_err_t telemetry_init(void)
         xTaskNotifyGive(s_telemetry_task);
     }
     return ESP_OK;
+}
+
+void telemetry_sleep_cycle(void)
+{
+    build_device_id();
+    ESP_LOGI(TAG, "SLEEP cycle wake: %s · checking for queued commands", s_device_id);
+
+    // Brief magenta blink so a watching engineer can tell the wake is happening.
+    led_set_rgb(true, false, true);
+    vTaskDelay(pdMS_TO_TICKS(60));
+    led_set_rgb(false, false, false);
+
+    // wifi_manager_init() only loads creds — actually initiate the connection.
+    // Without this the sleep cycle would sit at WIFI_DISCONNECTED until BLE
+    // pushes credentials, which never happens (BLE is off in SLEEP mode).
+    if (wifi_manager_has_credentials()) {
+        wifi_manager_connect();
+    } else {
+        ESP_LOGW(TAG, "SLEEP cycle: no saved WiFi credentials");
+    }
+
+    // Wait up to 15 s for WiFi association + DHCP.
+    for (int i = 0; i < 30; i++) {
+        if (wifi_manager_get_status() == WIFI_STATUS_CONNECTED) break;
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+    if (wifi_manager_get_status() == WIFI_STATUS_CONNECTED) {
+        // post_telemetry → handle_server_command may esp_restart() (wake) or
+        // esp_deep_sleep_start() (explicit sleep). If we return, no transition
+        // happened and we fall through to the default 10-min sleep below.
+        post_telemetry();
+    } else {
+        ESP_LOGW(TAG, "SLEEP cycle: WiFi never came up, sleeping anyway");
+    }
+
+    // If the just-received command kicked off an OTA, do NOT deep-sleep —
+    // that would tear down the WiFi/HTTP stack mid-download and brick the
+    // update. OTA task will reboot the device when finished. Add a safety
+    // timeout so a stalled OTA can't keep the radio on forever (max ~5 min).
+    if (s_ota_dispatched) {
+        ESP_LOGI(TAG, "OTA in progress — staying awake instead of deep-sleeping");
+        const int safety_timeout_s = 300;
+        for (int i = 0; i < safety_timeout_s; i++) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        ESP_LOGW(TAG, "OTA safety timeout reached, falling back to deep sleep");
+    }
+
+    ESP_LOGI(TAG, "Sleeping %d seconds", SLEEP_CYCLE_S);
+    led_set_rgb(false, false, false);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_sleep_enable_timer_wakeup((uint64_t)SLEEP_CYCLE_S * 1000000ULL);
+    esp_deep_sleep_start();
+    // never returns
 }

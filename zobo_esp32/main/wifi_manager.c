@@ -167,6 +167,16 @@ esp_err_t wifi_manager_connect(void)
         return ESP_ERR_NOT_FOUND;
     }
 
+    // Idempotent: if already connected, do nothing. Without this guard a
+    // second wifi_manager_connect() call would reset s_wifi_status to
+    // CONNECTING, and because the device is already associated no new
+    // IP_GOT_IP event ever fires — the status stays stuck on CONNECTING
+    // forever and the telemetry task skips every POST.
+    if (s_wifi_status == WIFI_STATUS_CONNECTED) {
+        ESP_LOGI(TAG, "Already connected to %s (%s), connect() is a no-op", s_ssid, s_ip_addr);
+        return ESP_OK;
+    }
+
     s_wifi_status = WIFI_STATUS_CONNECTING;
     s_retry_count = 0;
     led_indicate_wifi_connecting();
@@ -189,6 +199,11 @@ esp_err_t wifi_manager_connect(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    // Disable WiFi power save — when BLE is also active, the radio sharing
+    // causes intermittent TCP stalls (~10–60 s) that look like the telemetry
+    // task froze. Costs ~80 mA extra current but we're plugged in anyway.
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
     ESP_LOGI(TAG, "Connecting to %s...", s_ssid);
 
