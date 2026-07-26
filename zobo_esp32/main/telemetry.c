@@ -184,6 +184,17 @@ static void handle_server_command(const char *response_body)
             esp_sleep_enable_timer_wakeup((uint64_t)SLEEP_CYCLE_S * 1000000ULL);
             esp_deep_sleep_start();
             // never returns
+        } else if (action && strcmp(action, "set_led") == 0) {
+            // The server sends the three channels separately. LEDs hang off
+            // plain GPIO with no PWM, so each channel is only on or off and the
+            // eight combinations are everything the hardware can do.
+            bool r = cJSON_IsTrue(cJSON_GetObjectItem(cmd, "r"));
+            bool g = cJSON_IsTrue(cJSON_GetObjectItem(cmd, "g"));
+            bool b = cJSON_IsTrue(cJSON_GetObjectItem(cmd, "b"));
+            const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "color"));
+            ESP_LOGI(TAG, "Server-triggered LED colour: %s (R=%d G=%d B=%d)",
+                     name ? name : "?", r, g, b);
+            led_set_user_color(r, g, b);
         } else {
             ESP_LOGW(TAG, "Unknown command action: %s", action ? action : "(null)");
         }

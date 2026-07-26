@@ -45,6 +45,25 @@ void led_set_rgb(bool red, bool green, bool blue)
     gpio_set_level(LED_BLUE, blue ? 0 : 1);
 }
 
+// Colour last requested from the server. Without remembering it, the telemetry
+// ack flash would switch the LED off every ~5 s and a requested colour would
+// never survive longer than one telemetry cycle.
+static bool s_user_r = false, s_user_g = false, s_user_b = false;
+
+void led_set_user_color(bool red, bool green, bool blue)
+{
+    s_user_r = red;
+    s_user_g = green;
+    s_user_b = blue;
+    led_set_rgb(red, green, blue);
+    ESP_LOGI(TAG, "User colour set: R=%d G=%d B=%d", red, green, blue);
+}
+
+void led_restore_user_color(void)
+{
+    led_set_rgb(s_user_r, s_user_g, s_user_b);
+}
+
 void led_set_main(bool on)
 {
     gpio_set_level(LED_MAIN, on ? 1 : 0);
@@ -176,5 +195,7 @@ void led_telemetry_pulse(void)
 
     led_set_rgb(false, true, false);   // Green ON
     vTaskDelay(pdMS_TO_TICKS(60));
-    led_set_rgb(false, false, false);  // Off
+    // Put back whatever colour was requested from the server instead of going
+    // dark, otherwise this ack would wipe it every telemetry cycle.
+    led_restore_user_color();
 }

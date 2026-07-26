@@ -36,4 +36,12 @@ void led_ota_set_progress(int progress);
 // Blocking; call from a task context (not from an ISR).
 void led_telemetry_pulse(void);
 
+// Colour requested from the server (set_led command). Unlike led_set_rgb() this
+// one is remembered, so short-lived indications (the telemetry ack flash) put it
+// back afterwards instead of leaving the LED dark.
+void led_set_user_color(bool red, bool green, bool blue);
+
+// Re-apply the last requested colour. Called after a temporary indication ends.
+void led_restore_user_color(void);
+
 #endif // LED_H
