@@ -20,4 +20,8 @@ esp_err_t telemetry_init(void);
 // command handler may esp_restart() into ACTIVE mode instead.
 void telemetry_sleep_cycle(void);
 
+// Hardware id the robot reports (e.g. "Zobo-19CA30"). MQTT topics are built
+// from it, so both sides must use the same string. Valid after telemetry_init().
+const char *telemetry_device_id(void);
+
 #endif // TELEMETRY_H

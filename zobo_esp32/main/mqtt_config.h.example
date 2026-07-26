@@ -1,0 +1,17 @@
+/**
+ * MQTT credentials - copy to mqtt_config.h and fill in.
+ *
+ * mqtt_config.h is gitignored because it holds the broker password. The values
+ * live on the server in /var/www/html/.env as MQTT_ROBOT_USER / MQTT_ROBOT_PASS.
+ */
+
+#ifndef MQTT_CONFIG_H
+#define MQTT_CONFIG_H
+
+// Broker runs behind nginx on the website, so this reuses the site TLS cert
+// and needs no extra open port.
+#define MQTT_BROKER_URI   "wss://petrovelektronika.cz/mqtt"
+#define MQTT_USERNAME     "zobo"
+#define MQTT_PASSWORD     "vyplnit-z-env-MQTT_ROBOT_PASS"
+
+#endif // MQTT_CONFIG_H

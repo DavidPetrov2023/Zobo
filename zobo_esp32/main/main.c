@@ -24,6 +24,7 @@
 #include "ota_manager.h"
 #include "sleep_manager.h"
 #include "telemetry.h"
+#include "mqtt_control.h"
 #include "power_mode.h"
 
 static const char *TAG = "ZOBO";
@@ -396,6 +397,12 @@ void app_main(void)
     // Initialize telemetry (periodic status POST to /devices/ dashboard).
     // Each successful POST briefly flashes the green LED — see telemetry.c.
     telemetry_init();
+
+    // Low latency control channel. Telemetry still handles OTA and power mode,
+    // but its ~5 s command latency is useless for driving, so driving and LED go
+    // over a persistent MQTT connection instead (~50 ms). The client reconnects
+    // on its own, so starting it before WiFi is up is fine.
+    mqtt_control_start(telemetry_device_id());
 
     ESP_LOGI(TAG, "Ready! Waiting for BLE connection...");
 

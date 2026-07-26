@@ -7,5 +7,6 @@ idf_component_register(SRCS "main.c"
                             "sleep_manager.c"
                             "telemetry.c"
                             "power_mode.c"
+                            "mqtt_control.c"
                        INCLUDE_DIRS "."
                        EMBED_TXTFILES "certs/github_ca.pem")

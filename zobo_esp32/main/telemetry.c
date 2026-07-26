@@ -64,6 +64,11 @@ static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
+const char *telemetry_device_id(void)
+{
+    return s_device_id;
+}
+
 static void build_device_id(void)
 {
     uint8_t mac[6];
