@@ -59,7 +59,18 @@ static void apply_drive(double throttle, double steer)
         return;
     }
 
-    motor_set_direction(left >= 0, right >= 0);
+    // A forward ramp started over BLE would keep rewriting the duty from the
+    // main loop, so it has to go before we set our own.
+    motor_cancel_ramp();
+
+    // The direction pin LOW means forward, and in that direction the duty is
+    // simply the speed. With the pin HIGH the driver inverts the duty, so full
+    // reverse is duty 0 and duty 255 stands still - which is why the reverse
+    // branch complements the value instead of reusing it. Getting this backwards
+    // made "forward" do nothing at all.
+    bool left_fwd = (left >= 0);
+    bool right_fwd = (right >= 0);
+    motor_set_direction(!left_fwd, !right_fwd);
 
     // Below roughly a third of full duty the gearbox will not move at all, so
     // the usable range is compressed into 90..255 instead of 0..255.
@@ -67,6 +78,8 @@ static void apply_drive(double throttle, double steer)
     double ar = right < 0 ? -right : right;
     uint8_t pl = (uint8_t)(al > 0 ? 90 + al * 165 : 0);
     uint8_t pr = (uint8_t)(ar > 0 ? 90 + ar * 165 : 0);
+    if (!left_fwd) pl = 255 - pl;
+    if (!right_fwd) pr = 255 - pr;
     motor_set_pwm(pl, pr);
     s_driving = true;
 }
