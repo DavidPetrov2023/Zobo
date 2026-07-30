@@ -121,7 +121,11 @@ static esp_err_t camera_start(void)
         .pin_href = CAM_PIN_HREF,
         .pin_pclk = CAM_PIN_PCLK,
 
-        .xclk_freq_hz = 20000000,
+        // 20 MHz je maximum, ktere senzor zvladne, ale na tomhle modulu se pri
+        // nem objevuji vodorovne pruhy - hodiny jsou rychlejsi, nez staci
+        // napajeni cistit. 10 MHz da o polovinu min snimku za sekundu a
+        // podstatne cistsi obraz.
+        .xclk_freq_hz = 10000000,
         .ledc_timer = LEDC_TIMER_0,
         .ledc_channel = LEDC_CHANNEL_0,
 
@@ -156,9 +160,114 @@ static esp_err_t camera_start(void)
         // flipping here is free, doing it in the browser is not.
         s->set_vflip(s, 1);
         s->set_hmirror(s, 1);
+
+        // Factory settings assume bright daylight. Indoors that gives a dark,
+        // washed out picture, so the automatics get room to work: exposure and
+        // gain on, a high gain ceiling, and the night mode that lengthens
+        // exposure when there is not enough light.
+        s->set_gain_ctrl(s, 1);
+        s->set_exposure_ctrl(s, 1);
+        s->set_gainceiling(s, GAINCEILING_16X);
+        s->set_aec2(s, 1);          // night mode in the DSP
+        s->set_ae_level(s, 1);      // aim a little brighter than neutral
+        s->set_whitebal(s, 1);
+        s->set_awb_gain(s, 1);
+        s->set_brightness(s, 1);
+        s->set_contrast(s, 1);
+        s->set_saturation(s, 0);
+        s->set_bpc(s, 1);           // hide dead pixels
+        s->set_wpc(s, 1);
+        s->set_lenc(s, 1);          // lens vignetting correction
+        s->set_raw_gma(s, 1);
+        s->set_dcw(s, 1);
+
         ESP_LOGI(TAG, "Sensor PID 0x%02x ready", s->id.PID);
     }
     return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Ladeni senzoru za behu                                             */
+/* ------------------------------------------------------------------ */
+
+// Prehrat firmware kvuli kazde zmene jasu by znamenalo rozpojovat dratky, tak
+// jdou hodnoty menit po siti: /set?var=brightness&val=2
+static esp_err_t set_handler(httpd_req_t *req)
+{
+    char query[96] = { 0 };
+    char var[24] = { 0 }, val[16] = { 0 };
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "var", var, sizeof(var)) != ESP_OK ||
+        httpd_query_key_value(query, "val", val, sizeof(val)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "cekam ?var=NAZEV&val=CISLO");
+        return ESP_FAIL;
+    }
+
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "senzor neni");
+        return ESP_FAIL;
+    }
+
+    int v = atoi(val);
+    int res = -1;
+
+    if (!strcmp(var, "framesize"))          res = s->set_framesize(s, (framesize_t)v);
+    else if (!strcmp(var, "quality"))       res = s->set_quality(s, v);
+    else if (!strcmp(var, "brightness"))    res = s->set_brightness(s, v);
+    else if (!strcmp(var, "contrast"))      res = s->set_contrast(s, v);
+    else if (!strcmp(var, "saturation"))    res = s->set_saturation(s, v);
+    else if (!strcmp(var, "gainceiling"))   res = s->set_gainceiling(s, (gainceiling_t)v);
+    else if (!strcmp(var, "agc"))           res = s->set_gain_ctrl(s, v);
+    else if (!strcmp(var, "agc_gain"))      res = s->set_agc_gain(s, v);
+    else if (!strcmp(var, "aec"))           res = s->set_exposure_ctrl(s, v);
+    else if (!strcmp(var, "aec_value"))     res = s->set_aec_value(s, v);
+    else if (!strcmp(var, "aec2"))          res = s->set_aec2(s, v);
+    else if (!strcmp(var, "ae_level"))      res = s->set_ae_level(s, v);
+    else if (!strcmp(var, "awb"))           res = s->set_whitebal(s, v);
+    else if (!strcmp(var, "awb_gain"))      res = s->set_awb_gain(s, v);
+    else if (!strcmp(var, "wb_mode"))       res = s->set_wb_mode(s, v);
+    else if (!strcmp(var, "bpc"))           res = s->set_bpc(s, v);
+    else if (!strcmp(var, "wpc"))           res = s->set_wpc(s, v);
+    else if (!strcmp(var, "raw_gma"))       res = s->set_raw_gma(s, v);
+    else if (!strcmp(var, "lenc"))          res = s->set_lenc(s, v);
+    else if (!strcmp(var, "dcw"))           res = s->set_dcw(s, v);
+    else if (!strcmp(var, "hmirror"))       res = s->set_hmirror(s, v);
+    else if (!strcmp(var, "vflip"))         res = s->set_vflip(s, v);
+    else if (!strcmp(var, "special_effect")) res = s->set_special_effect(s, v);
+    else if (!strcmp(var, "colorbar"))      res = s->set_colorbar(s, v);
+
+    ESP_LOGI(TAG, "set %s = %d -> %d", var, v, res);
+    char out[80];
+    int n = snprintf(out, sizeof(out), "{\"var\":\"%s\",\"val\":%d,\"ok\":%s}",
+                     var, v, res == 0 ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, out, n);
+}
+
+// Aktualni nastaveni senzoru, aby slo ladit podle cisel a ne od oka.
+static esp_err_t get_handler(httpd_req_t *req)
+{
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "senzor neni");
+        return ESP_FAIL;
+    }
+    camera_status_t *c = &s->status;
+    char buf[512];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"framesize\":%d,\"quality\":%d,\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,"
+        "\"gainceiling\":%d,\"agc\":%d,\"agc_gain\":%d,\"aec\":%d,\"aec_value\":%d,\"aec2\":%d,"
+        "\"ae_level\":%d,\"awb\":%d,\"awb_gain\":%d,\"wb_mode\":%d,\"bpc\":%d,\"wpc\":%d,"
+        "\"raw_gma\":%d,\"lenc\":%d,\"dcw\":%d,\"hmirror\":%d,\"vflip\":%d,\"xclk_mhz\":%d}",
+        c->framesize, c->quality, c->brightness, c->contrast, c->saturation,
+        c->gainceiling, c->agc, c->agc_gain, c->aec, c->aec_value, c->aec2,
+        c->ae_level, c->awb, c->awb_gain, c->wb_mode, c->bpc, c->wpc,
+        c->raw_gma, c->lenc, c->dcw, c->hmirror, c->vflip, s->xclk_freq_hz / 1000000);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, buf, n);
 }
 
 /* ------------------------------------------------------------------ */
@@ -302,6 +411,8 @@ static void http_start(void)
         { .uri = "/jpg",    .method = HTTP_GET, .handler = jpg_handler },
         { .uri = "/status", .method = HTTP_GET, .handler = status_handler },
         { .uri = "/led",    .method = HTTP_GET, .handler = led_handler },
+        { .uri = "/set",    .method = HTTP_GET, .handler = set_handler },
+        { .uri = "/get",    .method = HTTP_GET, .handler = get_handler },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         httpd_register_uri_handler(server, &uris[i]);
