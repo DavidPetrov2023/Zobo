@@ -32,6 +32,7 @@
 #include "nvs_flash.h"
 
 #include "camera_pins.h"
+#include "mqtt_cam.h"
 #include "wifi_config.h"
 
 static const char *TAG = "ZOBO_CAM";
@@ -328,14 +329,21 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Zobo camera starting, free heap %u", (unsigned)esp_get_free_heap_size());
 
-    // Camera first: if it is miswired or unseated there is no point in going on,
-    // and the log then says so before WiFi noise scrolls it away.
-    if (camera_start() != ESP_OK) {
-        ESP_LOGE(TAG, "Giving up - check the ribbon cable and the 5V supply");
-        return;
+    // Camera first, so its verdict is in the log before WiFi noise scrolls it
+    // away. A failure is reported but not fatal: the board still joins the
+    // network, and a page saying "no sensor" is far easier to debug than a
+    // board that went quiet.
+    bool have_camera = (camera_start() == ESP_OK);
+    if (!have_camera) {
+        ESP_LOGE(TAG, "No camera - check the ribbon cable and the 5V supply");
     }
 
     wifi_start();
     xEventGroupWaitBits(s_wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
     http_start();
+
+    // Path out of the local network: the camera is behind NAT, so frames are
+    // pushed to the broker that already runs for the robot instead of waiting
+    // for someone to connect in.
+    if (have_camera) mqtt_cam_start();
 }

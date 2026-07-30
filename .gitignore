@@ -183,3 +183,4 @@ zobo_cam/sdkconfig.old
 zobo_cam/managed_components/
 zobo_cam/dependencies.lock
 zobo_cam/main/wifi_config.h
+zobo_cam/main/mqtt_config.h

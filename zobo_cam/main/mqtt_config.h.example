@@ -1,0 +1,16 @@
+/**
+ * Udaje k MQTT brokeru - zkopirovat na mqtt_config.h a vyplnit.
+ *
+ * Soubor mqtt_config.h je gitignorovany, protoze obsahuje heslo. Hodnoty jsou
+ * na serveru v /var/www/html/.env jako MQTT_ROBOT_USER / MQTT_ROBOT_PASS -
+ * kamera pouziva stejny ucet jako robot, jen jina temata (viz ACL brokeru).
+ */
+
+#ifndef MQTT_CONFIG_H
+#define MQTT_CONFIG_H
+
+#define MQTT_BROKER_URI   "wss://petrovelektronika.cz/mqtt"
+#define MQTT_USERNAME     "zobo"
+#define MQTT_PASSWORD     "vyplnit-z-env-MQTT_ROBOT_PASS"
+
+#endif // MQTT_CONFIG_H
