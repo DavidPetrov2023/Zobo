@@ -173,3 +173,13 @@ TODO.md
 
 # Large media not intended for git
 video/pasovy podvozek 2026.mp4
+
+# ============================================================================
+# ESP32-CAM module
+# ============================================================================
+zobo_cam/build/
+zobo_cam/sdkconfig
+zobo_cam/sdkconfig.old
+zobo_cam/managed_components/
+zobo_cam/dependencies.lock
+zobo_cam/main/wifi_config.h

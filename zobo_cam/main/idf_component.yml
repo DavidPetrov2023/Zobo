@@ -1,0 +1,6 @@
+dependencies:
+  # Espressif's own camera driver. Pulled from the component registry on the
+  # first build, so that build needs internet.
+  espressif/esp32-camera: "^2.0.0"
+  idf:
+    version: ">=5.0"

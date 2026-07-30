@@ -1,0 +1,12 @@
+/**
+ * Copy this file to wifi_config.h and fill in your network.
+ * wifi_config.h is gitignored so the password never reaches the repository.
+ */
+
+#ifndef WIFI_CONFIG_H
+#define WIFI_CONFIG_H
+
+#define WIFI_SSID     "your-network"
+#define WIFI_PASSWORD "your-password"
+
+#endif // WIFI_CONFIG_H
