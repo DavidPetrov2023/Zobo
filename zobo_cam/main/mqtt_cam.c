@@ -25,9 +25,11 @@ static const char *TAG = "CAM_MQTT";
 // zajem kazde 3 s, takze jeden ztraceny paket obraz neprerusi.
 #define VIEWER_TIMEOUT_MS 9000
 
-// Cil je plynulost, ne filmova kvalita: pet snimku za sekundu staci na to,
-// aby se dalo podle obrazu jet, a nesezere linku serveru.
-#define FRAME_PERIOD_MS 200
+// Cil je plynulost, ne filmova kvalita. Pri VGA a peti snimcich za sekundu byl
+// obraz na rizeni trhany, pritom senzor sam zvladne 24 sn/s v QVGA - strop byl
+// tady, ne v kamere. Deset snimku v QVGA vyjde na ~70 kB/s, tedy min dat, nez
+// stalo pet snimku ve VGA (~85 kB/s), takze linka serveru na tom vydela taky.
+#define FRAME_PERIOD_MS 100
 
 static esp_mqtt_client_handle_t s_client = NULL;
 static volatile bool s_connected = false;

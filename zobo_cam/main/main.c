@@ -135,7 +135,11 @@ static esp_err_t camera_start(void)
         // The sensor compresses to JPEG itself. Asking for raw pixels instead
         // would need more RAM per frame than the chip has.
         .pixel_format = PIXFORMAT_JPEG,
-        .frame_size = FRAMESIZE_VGA,
+        // QVGA staci na to, aby se podle obrazu dalo jet, a snimek ma 7 kB
+        // misto 17 - pri rizeni je plynulost cennejsi nez rozliseni, ktere
+        // stejne vidis zmensene. Za behu jde prepnout zpet:
+        //   /set?var=framesize&val=10
+        .frame_size = FRAMESIZE_QVGA,
         .jpeg_quality = 12,          // 10 is best, 63 worst; 12 is a good trade
         .fb_count = 2,
         .fb_location = CAMERA_FB_IN_PSRAM,

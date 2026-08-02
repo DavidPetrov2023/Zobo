@@ -21,7 +21,7 @@
 
 // Cislo, ktere kamera hlasi ve stavu a v /get - jinak se po vzdalene
 // aktualizaci neda poznat, jestli se novy firmware vubec chytil.
-#define CAM_FW_VERSION "1.1.4"
+#define CAM_FW_VERSION "1.1.5"
 
 // Jak dlouho ma novy obraz na to, aby se pripojil k brokeru a potvrdil se.
 #define OTA_CONFIRM_TIMEOUT_MS 120000
