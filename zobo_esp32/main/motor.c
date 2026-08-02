@@ -12,10 +12,16 @@
 static const char *TAG = "MOTOR";
 
 // GPIO Pin Definitions
-#define PWM_MOTOR_LEFT      16
-#define MOTOR_LEFT_DIR      17
-#define PWM_MOTOR_RIGHT     25
-#define MOTOR_RIGHT_DIR     26
+//
+// Prohozeno oproti puvodnimu zapojeni: GPIO 16/17 fyzicky pohani PRAVY pas,
+// 25/26 levy. Driv tu byly nazvy naopak, takze zataceni slo zrcadlove - A
+// zatacelo doprava a D doleva. Michani v mqtt_control.c i povely pres BLE jsou
+// pritom oboji spravne (zataceni vpravo = levy pas vpred, pravy vzad), chyba
+// byla az tady, na posledni urovni. Opravou se srovnaji obe cesty najednou.
+#define PWM_MOTOR_LEFT      25
+#define MOTOR_LEFT_DIR      26
+#define PWM_MOTOR_RIGHT     16
+#define MOTOR_RIGHT_DIR     17
 
 // PWM Configuration
 #define PWM_FREQ_HZ         5000
