@@ -7,6 +7,7 @@
 
 #include "esp_camera.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "mqtt_client.h"
@@ -25,17 +26,48 @@ static const char *TAG = "CAM_MQTT";
 // zajem kazde 3 s, takze jeden ztraceny paket obraz neprerusi.
 #define VIEWER_TIMEOUT_MS 9000
 
-// Cil je plynulost, ne filmova kvalita. Pri VGA a peti snimcich za sekundu byl
-// obraz na rizeni trhany, pritom senzor sam zvladne 24 sn/s v QVGA - strop byl
-// tady, ne v kamere. Deset snimku v QVGA vyjde na ~70 kB/s, tedy min dat, nez
-// stalo pet snimku ve VGA (~85 kB/s), takze linka serveru na tom vydela taky.
-#define FRAME_PERIOD_MS 100
+// Nizsi cislo neznamena svezejsi obraz. Pri 100 ms chodily snimky na server
+// pravidelne a bylo jich dvakrat vic, jenze kazdy uz byl skoro dve vteriny
+// stary: nestihaly odtect, nez vznikl dalsi, a vrsila se fronta. Na rizeni je
+// zpozdeni horsi nez nizsi pocet snimku - proto radeji posilat min a cerstve.
+//
+// Merit pritom staci propustnost jen na oklamani: ta pri fronte vypada dobre,
+// protoze data tecou porad. Poznat se to da az na `pub_ms` ve /status - kdyz
+// se blizi periode, posila se na hranici linky a zaloha zacina rust.
+#define FRAME_PERIOD_DEFAULT_MS 200
+
+// Spravna hodnota zavisi na sile signalu a na scene, takze ji nejde uhodnout u
+// stolu - meni se za behu pres /set?var=period&val=150.
+static volatile uint32_t s_period_ms = FRAME_PERIOD_DEFAULT_MS;
 
 static esp_mqtt_client_handle_t s_client = NULL;
 static volatile bool s_connected = false;
 static volatile int64_t s_last_viewer_us = 0;
 static volatile uint32_t s_sent = 0;
+// Jak dlouho trvalo odeslani posledniho snimku. Kdyz se to blizi FRAME_PERIOD_MS,
+// linka je na hranici a obraz zacne chodit opozdeny, i kdyz snimku neubyva.
+static volatile uint32_t s_pub_ms = 0;
 static char s_id[24] = "ZoboCam";
+
+uint32_t mqtt_cam_publish_ms(void)
+{
+    return s_pub_ms;
+}
+
+uint32_t mqtt_cam_get_period_ms(void)
+{
+    return s_period_ms;
+}
+
+// Pod 50 ms uz by se snimky prekryvaly i za idealnich podminek, nad sekundu to
+// prestava byt video.
+void mqtt_cam_set_period_ms(uint32_t ms)
+{
+    if (ms < 50) ms = 50;
+    if (ms > 1000) ms = 1000;
+    s_period_ms = ms;
+    ESP_LOGI(TAG, "Frame period set to %u ms (%.1f fps)", (unsigned)ms, 1000.0 / ms);
+}
 
 bool mqtt_cam_has_viewer(void)
 {
@@ -43,17 +75,38 @@ bool mqtt_cam_has_viewer(void)
     return (esp_timer_get_time() - s_last_viewer_us) / 1000 < VIEWER_TIMEOUT_MS;
 }
 
+// Adresa kamery v mistni siti. Stranka na webu na ni nemuze primo sahnout (bezi
+// na HTTPS a kamera mluvi HTTP), ale muze podle ni nabidnout odkaz - kdo je na
+// stejne siti, dostane obraz bez objizdky pres server. IP prideluje DHCP, takze
+// se musi hlasit, ne psat natvrdo.
+static void local_ip(char *out, size_t len)
+{
+    out[0] = 0;
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip;
+    if (netif && esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr) {
+        snprintf(out, len, IPSTR, IP2STR(&ip.ip));
+    }
+}
+
 static void publish_state(void)
 {
     if (!s_connected) return;
-    char msg[224];
+    char ip[20];
+    local_ip(ip, sizeof(ip));
+
+    char msg[288];
     int n = snprintf(msg, sizeof(msg),
-                     "{\"id\":\"%s\",\"up\":%lld,\"watching\":%s,\"sent\":%u,"
+                     "{\"id\":\"%s\",\"up\":%lld,\"watching\":%s,\"sent\":%u,\"pub_ms\":%u,"
+                     "\"ip\":\"%s\",\"period_ms\":%u,"
                      "\"fw\":\"%s\",\"ota\":%s,\"trial\":%s}",
                      s_id,
                      (long long)(esp_timer_get_time() / 1000000),
                      mqtt_cam_has_viewer() ? "true" : "false",
                      (unsigned)s_sent,
+                     (unsigned)s_pub_ms,
+                     ip,
+                     (unsigned)s_period_ms,
                      CAM_FW_VERSION,
                      ota_cam_busy() ? "\"running\"" : "false",
                      // Dokud je tohle true, novy obraz jeste neprosel zkouskou a
@@ -84,7 +137,9 @@ static void frame_task(void *arg)
         int64_t t0 = esp_timer_get_time();
         camera_fb_t *fb = esp_camera_fb_get();
         if (fb) {
+            int64_t t_pub = esp_timer_get_time();
             int id = esp_mqtt_client_publish(s_client, TOPIC_FRAME, (const char *)fb->buf, fb->len, 0, 0);
+            s_pub_ms = (uint32_t)((esp_timer_get_time() - t_pub) / 1000);
             if (id >= 0) s_sent++;
             esp_camera_fb_return(fb);
         }
@@ -95,7 +150,7 @@ static void frame_task(void *arg)
         }
 
         int64_t spent_ms = (esp_timer_get_time() - t0) / 1000;
-        int64_t wait = FRAME_PERIOD_MS - spent_ms;
+        int64_t wait = (int64_t)s_period_ms - spent_ms;
         vTaskDelay(pdMS_TO_TICKS(wait > 10 ? wait : 10));
     }
 }

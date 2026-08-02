@@ -135,11 +135,12 @@ static esp_err_t camera_start(void)
         // The sensor compresses to JPEG itself. Asking for raw pixels instead
         // would need more RAM per frame than the chip has.
         .pixel_format = PIXFORMAT_JPEG,
-        // QVGA staci na to, aby se podle obrazu dalo jet, a snimek ma 7 kB
-        // misto 17 - pri rizeni je plynulost cennejsi nez rozliseni, ktere
-        // stejne vidis zmensene. Za behu jde prepnout zpet:
+        // Zmereno na robotovi pri periode 200 ms: QVGA 7,0 kB a pub_ms 94,
+        // HVGA 8,9 kB a pub_ms 47, VGA 11,9 kB a pub_ms 106. HVGA tedy dava
+        // 2,5x vic pixelu nez QVGA a odesilani stoji ctvrtinu periody - VGA uz
+        // polovinu, a tam zacina hrozit fronta. Za behu jde prepnout:
         //   /set?var=framesize&val=10
-        .frame_size = FRAMESIZE_QVGA,
+        .frame_size = FRAMESIZE_HVGA,
         .jpeg_quality = 12,          // 10 is best, 63 worst; 12 is a good trade
         .fb_count = 2,
         .fb_location = CAMERA_FB_IN_PSRAM,
@@ -246,6 +247,9 @@ static esp_err_t set_handler(httpd_req_t *req)
     // Hodiny senzoru v MHz. Vyssi = vic snimku za sekundu, ale na tomhle modulu
     // se od nejake hranice vraceji vodorovne pruhy - tohle je hleda bez reflashe.
     else if (!strcmp(var, "xclk"))          res = s->set_xclk(s, LEDC_TIMER_0, v);
+    // Rozestup snimku pro vysilani na web. Nepatri senzoru, ale ladi se spolu
+    // s rozlisenim - plynulost a zpozdeni jdou proti sobe.
+    else if (!strcmp(var, "period"))      { mqtt_cam_set_period_ms(v); res = 0; }
 
     ESP_LOGI(TAG, "set %s = %d -> %d", var, v, res);
     char out[80];
@@ -295,7 +299,13 @@ static esp_err_t stream_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "X-Framerate", "60");
 
-    char part[64];
+    // Hlavicka jednoho snimku ma pres 60 znaku: hranice, typ obsahu, delka a
+    // prazdny radek. Do 64 bajtu se nevesla, snprintf ji usekl pred zavercem
+    // "\r\n\r\n" a jeste vratil delku, jakou by mela mit - odesilalo se tedy i
+    // par bajtu za koncem bufferu. Stream pak sice tekl a snimky sly spocitat,
+    // ale zadny prohlizec ani prehravac ho neposkladal, protoze bez prazdneho
+    // radku nepozna, kde konci hlavicka a zacinaji data.
+    char part[96];
     int64_t t_start = esp_timer_get_time();
     uint32_t frames = 0;
 
@@ -308,6 +318,10 @@ static esp_err_t stream_handler(httpd_req_t *req)
         }
 
         int len = snprintf(part, sizeof(part), STREAM_PART, (unsigned)fb->len);
+        // snprintf vraci delku, jakou by hlavicka mela - ne kolik se ji veslo.
+        // Bez tehle pojistky by se pri pristim rozsireni hlavicky zase cetlo za
+        // koncem bufferu, jen uz by to nebylo videt.
+        if (len < 0 || len >= (int)sizeof(part)) len = (int)sizeof(part) - 1;
         res = httpd_resp_send_chunk(req, part, len);
         if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
 
@@ -349,13 +363,16 @@ static esp_err_t status_handler(httpd_req_t *req)
     char buf[256];
     int n = snprintf(buf, sizeof(buf),
                      "{\"up\":%lld,\"frames\":%u,\"kbytes\":%u,\"heap\":%u,\"psram\":%s,"
-                     "\"framesize\":%d,\"fw\":\"%s\",\"trial\":%s}",
+                     "\"framesize\":%d,\"pub_ms\":%u,\"period_ms\":%u,"
+                     "\"fw\":\"%s\",\"trial\":%s}",
                      (long long)(esp_timer_get_time() / 1000000),
                      (unsigned)s_frames_sent,
                      (unsigned)(s_bytes_sent / 1024),
                      (unsigned)esp_get_free_heap_size(),
                      esp_psram_is_initialized() ? "true" : "false",
                      s ? s->status.framesize : -1,
+                     (unsigned)mqtt_cam_publish_ms(),
+                     (unsigned)mqtt_cam_get_period_ms(),
                      CAM_FW_VERSION,
                      ota_cam_pending() ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
@@ -458,9 +475,12 @@ static const char INDEX_HTML[] =
     "#s{color:#6b7280;font-size:.8rem;padding:.75rem}"
     "</style></head><body>"
     "<h1>Zobo kamera</h1>"
-    "<img src=\"/stream\" alt=\"zivy obraz\">"
+    "<img id=\"v\" alt=\"zivy obraz\">"
     "<div><a href=\"/jpg\">jeden snimek</a><a href=\"/led?on=1\">svetlo zap</a>"
     "<a href=\"/led?on=0\">vyp</a></div><div id=\"s\">...</div>"
+    // Obraz bezi na portu 81, aby nezablokoval ovladani; adresa se sklada az
+    // tady, aby fungovala i po zmene IP z DHCP.
+    "<script>document.getElementById('v').src='http://'+location.hostname+':81/stream';</script>"
     "<script>setInterval(async()=>{try{const r=await fetch('/status');const d=await r.json();"
     "document.getElementById('s').textContent='bezi '+d.up+' s, '+d.frames+' snimku, '"
     "+d.kbytes+' kB, volna pamet '+Math.round(d.heap/1024)+' kB';}catch(e){}},2000);</script>"
@@ -472,6 +492,19 @@ static esp_err_t index_handler(httpd_req_t *req)
     return httpd_resp_send(req, INDEX_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
+// Obraz bezi na vlastnim portu, a to ze dvou duvodu:
+//
+// 1) httpd ma jedinou obsluznou ulohu a stream_handler se nevrati, dokud se
+//    nekdo diva. Na jednom serveru tedy behem sledovani neodpovi uz nic - ani
+//    /status, ani /set, ani /ota. `max_open_sockets` s tim nepomuze, to jsou
+//    sockety, ne workeri.
+// 2) `lru_purge_enable` na ovladacim serveru vyhazuje nejstarsi spojeni, a
+//    dlouho bezici stream je vzdy ten nejstarsi - stranka se kazde 2 s pta na
+//    /status a po ctyrech dotazech obraz utrhla.
+//
+// Druhy server ma vlastni ulohu i vlastni sockety, takze se ty dva nervou.
+#define STREAM_PORT 81
+
 static void http_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -479,8 +512,6 @@ static void http_start(void)
     // Nahravani firmwaru je pomalejsi nez obrazek, vychozich 5 s na prijem
     // celeho tela by na megabajtovy obraz nestacilo.
     config.recv_wait_timeout = 20;
-    // The stream handler never returns while a viewer is watching, so it needs
-    // a worker of its own or nothing else would answer.
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
     config.stack_size = 8192;
@@ -491,9 +522,38 @@ static void http_start(void)
         return;
     }
 
+    // Server pro obraz. Nejvetsi nebezpeci tady nejsou dva divaci, ale jeden
+    // mrtvy: kdyz prohlizec zavre zalozku bez rozlouceni, TCP se to dozvi az za
+    // dlouho a obsluzna uloha do te doby cpe snimky do prazdna - novy divak pak
+    // necaka na obraz, ale na uvolneni fronty a nedostane ani bajt.
+    //
+    // Proti tomu tri pojistky: kratky limit na odeslani (zaseknuty zapis skonci
+    // chybou a handler se ukonci), keepalive (spojeni bez odezvy se zavre samo)
+    // a purge (novy divak si misto uvolni sam, misto aby cekal).
+    httpd_config_t scfg = HTTPD_DEFAULT_CONFIG();
+    scfg.server_port = STREAM_PORT;
+    scfg.ctrl_port = config.ctrl_port + 1;   // jinak by se dve instance praly o stejny UDP port
+    scfg.max_uri_handlers = 2;
+    scfg.max_open_sockets = 3;
+    scfg.lru_purge_enable = true;
+    scfg.send_wait_timeout = 3;
+    scfg.keep_alive_enable = true;
+    scfg.keep_alive_idle = 5;
+    scfg.keep_alive_interval = 5;
+    scfg.keep_alive_count = 3;
+    scfg.stack_size = 8192;
+
+    httpd_handle_t stream_server = NULL;
+    if (httpd_start(&stream_server, &scfg) == ESP_OK) {
+        httpd_uri_t su = { .uri = "/stream", .method = HTTP_GET, .handler = stream_handler };
+        httpd_register_uri_handler(stream_server, &su);
+        ESP_LOGI(TAG, "Stream server on port %d", STREAM_PORT);
+    } else {
+        ESP_LOGE(TAG, "Stream server failed to start");
+    }
+
     httpd_uri_t uris[] = {
         { .uri = "/",       .method = HTTP_GET, .handler = index_handler },
-        { .uri = "/stream", .method = HTTP_GET, .handler = stream_handler },
         { .uri = "/jpg",    .method = HTTP_GET, .handler = jpg_handler },
         { .uri = "/status", .method = HTTP_GET, .handler = status_handler },
         { .uri = "/led",    .method = HTTP_GET, .handler = led_handler },
