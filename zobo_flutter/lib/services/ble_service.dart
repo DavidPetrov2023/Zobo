@@ -6,8 +6,11 @@ enum RobotCommand {
   moveBackward(0),
   moveForward(1),
   moveStop(2),
-  moveLeft(3),
-  moveRight(4),
+  // Firmware maps 3 to a right turn and 4 to a left turn (CMD_RIGHT/CMD_LEFT
+  // in zobo_esp32/main/main.c). These were the wrong way round here, so the
+  // Left button steered right and vice versa.
+  moveRight(3),
+  moveLeft(4),
   ledGreen(10),
   ledRed(20),
   ledBlue(30),
