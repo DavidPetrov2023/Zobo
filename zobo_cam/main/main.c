@@ -31,8 +31,11 @@
 #include "driver/gpio.h"
 #include "nvs_flash.h"
 
+#include "esp_ota_ops.h"
+
 #include "camera_pins.h"
 #include "mqtt_cam.h"
+#include "ota_cam.h"
 #include "wifi_config.h"
 
 static const char *TAG = "ZOBO_CAM";
@@ -341,13 +344,16 @@ static esp_err_t status_handler(httpd_req_t *req)
     sensor_t *s = esp_camera_sensor_get();
     char buf[256];
     int n = snprintf(buf, sizeof(buf),
-                     "{\"up\":%lld,\"frames\":%u,\"kbytes\":%u,\"heap\":%u,\"psram\":%s,\"framesize\":%d}",
+                     "{\"up\":%lld,\"frames\":%u,\"kbytes\":%u,\"heap\":%u,\"psram\":%s,"
+                     "\"framesize\":%d,\"fw\":\"%s\",\"trial\":%s}",
                      (long long)(esp_timer_get_time() / 1000000),
                      (unsigned)s_frames_sent,
                      (unsigned)(s_bytes_sent / 1024),
                      (unsigned)esp_get_free_heap_size(),
                      esp_psram_is_initialized() ? "true" : "false",
-                     s ? s->status.framesize : -1);
+                     s ? s->status.framesize : -1,
+                     CAM_FW_VERSION,
+                     ota_cam_pending() ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, buf, n);
@@ -365,6 +371,76 @@ static esp_err_t led_handler(httpd_req_t *req)
     gpio_set_level(CAM_PIN_FLASH_LED, on ? 1 : 0);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, on ? "{\"led\":true}" : "{\"led\":false}");
+}
+
+// Doma na stejne siti nema smysl posilat firmware oklikou pres server: nova
+// binarka se nahraje rovnou sem.
+//   curl --data-binary @build/zobo_cam.bin http://<ip>/ota
+// Na dalku tahle cesta nefunguje (kamera je za NATem) - tam se posila povel
+// {"ota":"https://..."} na zobo/cam/ctrl a kamera si obraz stahne sama.
+static esp_err_t ota_push_handler(httpd_req_t *req)
+{
+    if (ota_cam_busy() || ota_cam_pending()) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "jina aktualizace jeste nedobehla");
+        return ESP_FAIL;
+    }
+
+    const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);
+    if (!target) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "neni volny slot");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGW(TAG, "Receiving %d bytes of firmware into %s", req->content_len, target->label);
+    ota_cam_stop_camera();
+
+    esp_ota_handle_t handle = 0;
+    if (esp_ota_begin(target, OTA_SIZE_UNKNOWN, &handle) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota_begin selhal");
+        esp_restart();
+        return ESP_FAIL;
+    }
+
+    char chunk[1024];
+    int left = req->content_len;
+    while (left > 0) {
+        int got = httpd_req_recv(req, chunk, MIN(left, (int)sizeof(chunk)));
+        if (got <= 0) {
+            // Prerusene spojeni znamena nekompletni obraz - zahodit, at se
+            // nedopise neco, co by se pak nespustilo.
+            // Prerusene spojeni znamena nekompletni obraz - zahodit, at se
+            // nedopise neco, co by se pak nespustilo. Restart je tu proto, ze
+            // kamera je uz odstavena a jinak by zustal jen mrtvy obraz.
+            esp_ota_abort(handle);
+            ESP_LOGE(TAG, "Upload interrupted with %d bytes to go", left);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "prenos prerusen");
+            esp_restart();
+        }
+        if (esp_ota_write(handle, chunk, got) != ESP_OK) {
+            esp_ota_abort(handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "zapis selhal");
+            esp_restart();
+        }
+        left -= got;
+    }
+
+    if (esp_ota_end(handle) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "obraz neprosel kontrolou");
+        esp_restart();
+    }
+    if (esp_ota_set_boot_partition(target) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "prepnuti slotu selhalo");
+        esp_restart();
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"restart\":true}");
+    ESP_LOGW(TAG, "Firmware written to %s, restarting", target->label);
+
+    // Odpoved musi stihnout odejit driv, nez zmizi sit pod rukama.
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
 }
 
 static const char INDEX_HTML[] =
@@ -395,7 +471,10 @@ static esp_err_t index_handler(httpd_req_t *req)
 static void http_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 9;
+    // Nahravani firmwaru je pomalejsi nez obrazek, vychozich 5 s na prijem
+    // celeho tela by na megabajtovy obraz nestacilo.
+    config.recv_wait_timeout = 20;
     // The stream handler never returns while a viewer is watching, so it needs
     // a worker of its own or nothing else would answer.
     config.max_open_sockets = 4;
@@ -416,6 +495,7 @@ static void http_start(void)
         { .uri = "/led",    .method = HTTP_GET, .handler = led_handler },
         { .uri = "/set",    .method = HTTP_GET, .handler = set_handler },
         { .uri = "/get",    .method = HTTP_GET, .handler = get_handler },
+        { .uri = "/ota",    .method = HTTP_POST, .handler = ota_push_handler },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         httpd_register_uri_handler(server, &uris[i]);
@@ -441,7 +521,12 @@ void app_main(void)
     gpio_config(&led);
     gpio_set_level(CAM_PIN_FLASH_LED, 0);
 
-    ESP_LOGI(TAG, "Zobo camera starting, free heap %u", (unsigned)esp_get_free_heap_size());
+    ESP_LOGI(TAG, "Zobo camera %s starting, free heap %u",
+             CAM_FW_VERSION, (unsigned)esp_get_free_heap_size());
+
+    // Musi byt driv nez cokoliv, co muze spadnout: kdyz tenhle obraz prisel po
+    // siti a jeste se nepotvrdil, rozjede se hlidac navratu k predchozimu.
+    ota_cam_init();
 
     // Camera first, so its verdict is in the log before WiFi noise scrolls it
     // away. A failure is reported but not fatal: the board still joins the

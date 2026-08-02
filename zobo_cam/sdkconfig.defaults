@@ -12,9 +12,16 @@ CONFIG_SPIRAM_SPEED_40M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 
-# No OTA partition: the whole flash goes to one app, which leaves room for the
-# camera driver. Updates go over the programmer for now.
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# Two app slots. Flashing this board means grounding IO0 by hand, and the robot
+# it rides on will not always be within arm's reach, so a new image has to be
+# able to arrive over the network - and needs somewhere to land.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# A fresh image must confirm itself once it is up; if it never does, the next
+# reset returns to the previous one. This is the only safety net once the
+# programmer is out of reach.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # The stream handler holds a socket open for as long as somebody is watching.
 CONFIG_LWIP_MAX_SOCKETS=10

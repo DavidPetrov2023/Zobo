@@ -13,6 +13,7 @@
 #include "esp_crt_bundle.h"
 
 #include "mqtt_config.h"
+#include "ota_cam.h"
 
 static const char *TAG = "CAM_MQTT";
 
@@ -43,13 +44,20 @@ bool mqtt_cam_has_viewer(void)
 static void publish_state(void)
 {
     if (!s_connected) return;
-    char msg[160];
+    char msg[224];
     int n = snprintf(msg, sizeof(msg),
-                     "{\"id\":\"%s\",\"up\":%lld,\"watching\":%s,\"sent\":%u}",
+                     "{\"id\":\"%s\",\"up\":%lld,\"watching\":%s,\"sent\":%u,"
+                     "\"fw\":\"%s\",\"ota\":%s,\"trial\":%s}",
                      s_id,
                      (long long)(esp_timer_get_time() / 1000000),
                      mqtt_cam_has_viewer() ? "true" : "false",
-                     (unsigned)s_sent);
+                     (unsigned)s_sent,
+                     CAM_FW_VERSION,
+                     ota_cam_busy() ? "\"running\"" : "false",
+                     // Dokud je tohle true, novy obraz jeste neprosel zkouskou a
+                     // muze se sam vratit k predchozimu - na dalku je to jediny
+                     // rozdil mezi "chytlo se to" a "za chvili to bude zpatky".
+                     ota_cam_pending() ? "true" : "false");
     esp_mqtt_client_publish(s_client, TOPIC_STATE, msg, n, 0, 0);
 }
 
@@ -90,17 +98,45 @@ static void frame_task(void *arg)
     }
 }
 
+// Vytahne hodnotu retezcoveho klice z ploche JSON zpravy. Kvuli jednomu klici
+// se nevyplati tahat sem parser - zpravy si posilame sami a jsou triviální.
+static bool json_string(const char *json, const char *key, char *out, size_t out_len)
+{
+    char pattern[24];
+    snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
+
+    const char *p = strstr(json, pattern);
+    if (!p) return false;
+    p += strlen(pattern);
+
+    const char *end = strchr(p, '"');
+    if (!end || (size_t)(end - p) >= out_len) return false;
+
+    memcpy(out, p, end - p);
+    out[end - p] = 0;
+    return true;
+}
+
 static void handle_ctrl(const char *data, int len)
 {
     // Staci, ze zprava prisla - je to tep divaka. Obsah se cte jen kvuli
-    // vypnuti ("watch":false), aby slo vysilani zastavit hned.
-    // Data z MQTT nekonci nulou, tak si udelame vlastni kopii.
-    char buf[64];
+    // vypnuti ("watch":false) a povelu k aktualizaci.
+    // Data z MQTT nekonci nulou, tak si udelame vlastni kopii. Buffer musi
+    // pojmout celou URL firmwaru, ne jen kratky povel.
+    char buf[320];
     int n = len;
     if (n < 0) n = 0;
     if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
     memcpy(buf, data, n);
     buf[n] = 0;
+
+    char url[256];
+    if (json_string(buf, "ota", url, sizeof(url))) {
+        ESP_LOGW(TAG, "Update requested: %s", url);
+        esp_err_t err = ota_cam_start(url);
+        if (err != ESP_OK) ESP_LOGE(TAG, "Update refused: %s", esp_err_to_name(err));
+        return;
+    }
 
     if (strstr(buf, "\"watch\":false")) {
         s_last_viewer_us = 0;
@@ -120,6 +156,10 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t event_
             s_connected = true;
             ESP_LOGI(TAG, "Broker connected, publishing to %s", TOPIC_FRAME);
             esp_mqtt_client_subscribe(s_client, TOPIC_CTRL, 0);
+            // Az tady je nova verze prokazatelne na siti a dosazitelna povelem.
+            // Driv ji za dobrou prohlasit nelze - prave tohle je ta schopnost,
+            // o kterou pri spatnem buildu jde.
+            ota_cam_confirm();
             publish_state();
             break;
 
