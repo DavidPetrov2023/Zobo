@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'services/ble_service.dart';
+import 'services/camera_service.dart';
 import 'widgets/hold_repeat_button.dart';
+import 'pages/camera_page.dart';
 import 'pages/settings_page.dart';
 
 const bool kDebugMode = bool.fromEnvironment('DEBUG_MODE', defaultValue: false);
@@ -42,8 +44,13 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final BleService _bleService = BleService();
+  // The camera is the robot's second board and talks over WiFi, so it comes up
+  // on its own without waiting for the BLE link. The service lives here rather
+  // than on the camera page because both the small view below and that page
+  // show the same stream, and the camera only serves one watcher at a time.
+  final CameraService _cameraService = CameraService();
   final TextEditingController _messageController = TextEditingController();
   final List<String> _logMessages = [];
   final ScrollController _scrollController = ScrollController();
@@ -51,17 +58,42 @@ class _HomePageState extends State<HomePage> {
   bool _isScanning = false;
   bool _isConnected = false;
   String? _deviceName;
+  CamStatus _camStatus = const CamStatus(CamState.idle);
 
   late StreamSubscription<bool> _scanSubscription;
   late StreamSubscription<bool> _connectionSubscription;
   late StreamSubscription<String?> _deviceNameSubscription;
   late StreamSubscription<String> _logSubscription;
+  late StreamSubscription<CamStatus> _camStatusSubscription;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _setupSubscriptions();
-    _requestPermissions();
+    _startup();
+    _cameraService.startSaved();
+  }
+
+  // The robot is the only thing this app talks to, so there is nothing to
+  // decide on the first screen - the scan starts by itself. It waits for the
+  // permission dialog first, because a scan without those rights finds nothing
+  // on Android and would just time out.
+  Future<void> _startup() async {
+    await _requestPermissions();
+    if (!mounted) return;
+    _bleService.startScan();
+  }
+
+  // A stream nobody is looking at still costs WiFi and battery on both ends,
+  // so it goes away with the app and comes back with it.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _cameraService.resume();
+    } else {
+      _cameraService.stop();
+    }
   }
 
   void _setupSubscriptions() {
@@ -75,6 +107,10 @@ class _HomePageState extends State<HomePage> {
 
     _deviceNameSubscription = _bleService.deviceNameStream.listen((name) {
       setState(() => _deviceName = name);
+    });
+
+    _camStatusSubscription = _cameraService.status.listen((status) {
+      setState(() => _camStatus = status);
     });
 
     _logSubscription = _bleService.logMessages.listen((message) {
@@ -129,11 +165,14 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _scanSubscription.cancel();
     _connectionSubscription.cancel();
     _deviceNameSubscription.cancel();
     _logSubscription.cancel();
+    _camStatusSubscription.cancel();
     _bleService.dispose();
+    _cameraService.dispose();
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -151,6 +190,13 @@ class _HomePageState extends State<HomePage> {
             onPressed: () => _showAboutDialog(context),
             tooltip: 'About',
           ),
+          // The camera is a separate board on WiFi, so this does not wait for
+          // the BLE link to the robot.
+          IconButton(
+            icon: const Icon(Icons.videocam),
+            onPressed: _openCamera,
+            tooltip: 'Camera',
+          ),
           IconButton(
             icon: const Icon(Icons.settings),
             onPressed: _isConnected
@@ -167,8 +213,11 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
+      // Scrollable because the picture pushed the page past the height of a
+      // short screen, and a keyboard over the message field takes another
+      // chunk of it.
       body: SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(16.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -180,7 +229,11 @@ class _HomePageState extends State<HomePage> {
               _buildMessageInput(),
               const SizedBox(height: 8),
               _buildActionButtons(),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
+              // The sensor gives 4:3, so the box is that shape and no part of
+              // the picture is wasted on black borders.
+              AspectRatio(aspectRatio: 4 / 3, child: _buildCameraSection()),
+              const SizedBox(height: 12),
               _buildDPad(),
               if (kDebugMode) ...[
                 const SizedBox(height: 16),
@@ -333,6 +386,25 @@ class _HomePageState extends State<HomePage> {
             style: ElevatedButton.styleFrom(backgroundColor: Colors.yellow.shade100),
             child: const Text("Light"),
           ),
+          const SizedBox(width: 8),
+          // The camera carries a light of its own, on the other board. It is
+          // wanted while driving into a dark corner, so it sits here next to
+          // the robot's own lights and not only on the camera page. No BLE
+          // link needed - this one goes over WiFi.
+          ValueListenableBuilder<bool>(
+            valueListenable: _cameraService.ledOn,
+            builder: (context, on, _) => ElevatedButton.icon(
+              onPressed: _toggleCamLed,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: on ? Colors.amber.shade300 : null,
+              ),
+              icon: Icon(
+                on ? Icons.flashlight_on : Icons.flashlight_off,
+                size: 18,
+              ),
+              label: const Text("Cam light"),
+            ),
+          ),
           if (kDebugMode) ...[
             const SizedBox(width: 16),
             OutlinedButton(
@@ -341,6 +413,67 @@ class _HomePageState extends State<HomePage> {
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  Future<void> _toggleCamLed() async {
+    final ok = await _cameraService.toggleLed();
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('The camera did not take the light command'),
+        ),
+      );
+    }
+  }
+
+  void _openCamera() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CameraPage(camera: _cameraService),
+      ),
+    );
+  }
+
+  Widget _buildCameraSection() {
+    return GestureDetector(
+      onTap: _openCamera,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          CameraView(camera: _cameraService, status: _camStatus),
+          Positioned(left: 8, bottom: 8, child: _buildCameraLabel()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCameraLabel() {
+    final String text;
+    switch (_camStatus.state) {
+      case CamState.live:
+        text = '${_camStatus.fps.toStringAsFixed(0)} fps';
+      case CamState.searching:
+        text = 'searching ${(_camStatus.progress * 100).round()} %';
+      case CamState.idle:
+        text = 'camera off';
+      case CamState.connecting:
+      case CamState.retrying:
+      case CamState.error:
+        text = _camStatus.message;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(color: Colors.white70, fontSize: 12),
       ),
     );
   }
@@ -433,7 +566,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildLogSection() {
-    return Expanded(
+    // A fixed height, not Expanded: the page scrolls now, so there is no
+    // leftover space to claim.
+    return SizedBox(
+      height: 220,
       child: Container(
         decoration: BoxDecoration(
           border: Border.all(color: Colors.grey.shade300),
