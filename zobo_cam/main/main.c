@@ -236,6 +236,9 @@ static esp_err_t set_handler(httpd_req_t *req)
     else if (!strcmp(var, "vflip"))         res = s->set_vflip(s, v);
     else if (!strcmp(var, "special_effect")) res = s->set_special_effect(s, v);
     else if (!strcmp(var, "colorbar"))      res = s->set_colorbar(s, v);
+    // Hodiny senzoru v MHz. Vyssi = vic snimku za sekundu, ale na tomhle modulu
+    // se od nejake hranice vraceji vodorovne pruhy - tohle je hleda bez reflashe.
+    else if (!strcmp(var, "xclk"))          res = s->set_xclk(s, LEDC_TIMER_0, v);
 
     ESP_LOGI(TAG, "set %s = %d -> %d", var, v, res);
     char out[80];
