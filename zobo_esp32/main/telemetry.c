@@ -11,7 +11,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -80,20 +79,24 @@ static void build_device_id(void)
     }
 }
 
-// Slow oscillating room temperature simulation around ~22 C, rounded to 1 decimal.
-static float fake_temperature(int64_t uptime_s)
-{
-    float t = 22.0f + 1.8f * sinf((float)uptime_s / 600.0f);
-    return roundf(t * 10.0f) / 10.0f;
-}
-
+/*
+ * No Temperature here, on purpose.
+ *
+ * This used to report a simulated sine wave around 22 C. The dashboard has no
+ * way to tell a made-up number from a measured one: devices/api.php files
+ * LiveStatus.Temperature into the measurement history, so the graph presented
+ * years of invented weather as readings.
+ *
+ * The robot carries no temperature sensor, so it says nothing. A missing row
+ * reads as "not measured"; a plausible number does not. If a real sensor is
+ * ever fitted, report it under Temperature. For the ESP32's own silicon use
+ * ChipTemp instead -- that is diagnostics, not the room, and the dashboard
+ * keeps it out of the history for exactly that reason (see FlatLock's
+ * chip_temp.h).
+ */
 static char *build_payload(void)
 {
     int64_t uptime_s = esp_timer_get_time() / 1000000;
-    float temp = fake_temperature(uptime_s);
-
-    char temp_str[16];
-    snprintf(temp_str, sizeof(temp_str), "%.1f", temp);
 
     cJSON *root = cJSON_CreateObject();
 
@@ -102,7 +105,6 @@ static char *build_payload(void)
     cJSON_AddStringToObject(device_info, "Firmware", ota_manager_get_version());
 
     cJSON *live = cJSON_AddObjectToObject(root, "LiveStatus");
-    cJSON_AddNumberToObject(live, "Temperature", temp);
     cJSON_AddNumberToObject(live, "Uptime", (double)uptime_s);
     cJSON_AddNumberToObject(live, "ErrorCode", 0);
     cJSON_AddStringToObject(live, "EventState", "idle");
@@ -111,14 +113,6 @@ static char *build_payload(void)
     cJSON *product = cJSON_AddObjectToObject(root, "ProductInfo");
     // Field name matches the auto-detect key in devices/api.php
     cJSON_AddStringToObject(product, "Název zařízení", DEVICE_NAME);
-
-    cJSON *sensors = cJSON_AddArrayToObject(product, "Sensors");
-    cJSON *sensor = cJSON_CreateObject();
-    cJSON_AddStringToObject(sensor, "Name", "Teplota mistnosti");
-    cJSON_AddStringToObject(sensor, "Value", temp_str);
-    cJSON_AddStringToObject(sensor, "Unit", "°C");
-    cJSON_AddStringToObject(sensor, "Type", "fake");
-    cJSON_AddItemToArray(sensors, sensor);
 
     char *out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
