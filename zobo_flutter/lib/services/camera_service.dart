@@ -57,6 +57,20 @@ class CameraService {
   /// searches the network once.
   static const String defaultHost = '192.168.0.243';
 
+  /// What the picture is asked to be, every time we connect.
+  ///
+  /// The camera keeps whatever it was last told, and that is not something to
+  /// rely on: a reboot puts it back to HVGA, and anyone tuning it over /set
+  /// leaves it wherever they finished. Asking on every connect makes the frame
+  /// rate a property of this app instead of a leftover.
+  ///
+  /// QVGA is the choice that matters most. The sensor reads it with binning and
+  /// manages roughly twice the frames of HVGA (~24 against ~12.5 per second),
+  /// while the phone scales both to the same size anyway - on a screen held at
+  /// arm's length, smoothness beats resolution.
+  static const int _wantFrameSize = 6;   // QVGA 320x240
+  static const int _wantQuality = 12;    // lower is better; 12 is the usual trade
+
   /// The stream is a TCP connection that carries no keepalive of its own: when
   /// the camera reboots or WiFi drops, the socket often just goes quiet instead
   /// of closing. Silence this long is treated as a dead link.
@@ -155,6 +169,14 @@ class CameraService {
     _client = client;
 
     try {
+      // Before the stream, not after: the first frames should already be the
+      // size we want, otherwise the picture visibly changes shape a second in.
+      await _applyWantedSettings();
+      if (!_wanted || !identical(_client, client)) {
+        client.close(force: true);
+        return;
+      }
+
       final request =
           await client.getUrl(Uri.parse('http://$_host:$streamPort/stream'));
       final response = await request.close().timeout(const Duration(seconds: 6));
@@ -182,6 +204,31 @@ class CameraService {
       _retry('No answer from $_host');
     } catch (e) {
       _retry(_short(e));
+    }
+  }
+
+  /// Settings live on the control port, which answers even while the stream
+  /// runs - the two servers are separate on the camera precisely so this works.
+  Future<void> _applyWantedSettings() async {
+    await _set('framesize', _wantFrameSize);
+    await _set('quality', _wantQuality);
+  }
+
+  Future<void> _set(String name, int value) async {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(milliseconds: 800);
+    try {
+      final request = await client
+          .getUrl(Uri.parse('http://$_host:$controlPort/set?var=$name&val=$value'));
+      final response =
+          await request.close().timeout(const Duration(milliseconds: 1200));
+      await response.drain<void>();
+    } catch (_) {
+      // A camera that will not take a setting can still send a picture, and a
+      // picture at the wrong size beats no picture at all. Connecting carries
+      // on either way.
+    } finally {
+      client.close(force: true);
     }
   }
 
