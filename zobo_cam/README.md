@@ -49,7 +49,7 @@ Přihlašovací údaje k WiFi nejsou v repozitáři:
 Pak z PowerShellu (ne z Git Bash, tam `idf.py` není vidět):
 
 ```powershell
-Set-Location C:\Cloud\Zobo\zobo_cam
+Set-Location C:\Cloud\AI\Zobo\zobo_cam
 . "$env:USERPROFILE\esp\v5.2.6\esp-idf\export.ps1"
 idf.py build
 idf.py -p COM5 flash monitor      # port podle toho, co ESP-PROG vytvoří
