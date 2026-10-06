@@ -4,6 +4,20 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
+// Podpisovy klic. Zije MIMO git (*.keystore i key.properties jsou
+// v .gitignore), zaloha je v <OneDrive>/PetrovBench/keys/Zobo/zobo_flutter/.
+// Od 6. 10. 2026 je to debug klic notebooku CONTB025, kterym se Zobo do te
+// doby buildilo: aplikace v telefonu je podepsana jim, takze nova verze
+// jde pres ni bez preinstalace a builduje se odkudkoli. Stejne jako
+// TempWidget, kvuli Overeni vyvojare pro Android.
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withReader("UTF-8") { reader ->
+        keystoreProperties.load(reader)
+    }
+}
+
 android {
     namespace = "cz.davidpetrov.zobo_flutter"
     compileSdk = 34
@@ -26,9 +40,28 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        release {
+            keyAlias = keystoreProperties['keyAlias']
+            keyPassword = keystoreProperties['keyPassword']
+            // Ternarni operator na JEDNOM radku, jinak ho Groovy neprelozi.
+            storeFile = keystoreProperties['storeFile'] ? rootProject.file(keystoreProperties['storeFile']) : null
+            storePassword = keystoreProperties['storePassword']
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.debug
+            // Bez klice se release build ZASTAVI, nespadne zpatky na debug
+            // klic tohoto stroje: ten by vyrobil APK, ktere `adb install -r`
+            // pres tu v telefonu odmitne.
+            if (!keystorePropertiesFile.exists()) {
+                throw new GradleException(
+                    "Chybi android/key.properties s podpisovym klicem. " +
+                    "Vezmi si ho z <OneDrive>/PetrovBench/keys/Zobo/zobo_flutter/ " +
+                    "(zalozka Key environment v Petrov Benchi to umi sama).")
+            }
+            signingConfig = signingConfigs.release
         }
     }
 }

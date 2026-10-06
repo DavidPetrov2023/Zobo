@@ -1,0 +1,12 @@
+# Vzor pro key.properties. Skutecny soubor je v .gitignore spolu s keystorem.
+#
+# Zaloha obojiho lezi v ulozisti klicu (Petrov Bench, zalozka Key environment):
+#   <OneDrive>/PetrovBench/keys/Zobo/zobo_flutter/android/
+#
+# Klic je debug klic notebooku CONTB025 (od 6. 10. 2026 oficialni, tentyz
+# jako u TempWidgetu), proto zname heslo "android". storeFile je relativne
+# k android/.
+storePassword=android
+keyPassword=android
+keyAlias=androiddebugkey
+storeFile=app/debug-contb025.keystore
